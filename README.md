@@ -1,100 +1,156 @@
-# iOS Mach-O Loader Boilerplate for PS Vita
+<h1 align="center">
+  <img src="extras/livearea/pic0.png" alt="Crash Nitro Kart 3D PS Vita Banner" width="700"><br>
+  Crash Nitro Kart 3D · PS Vita Port
+</h1>
 
-A reusable boilerplate and scaffolding framework for porting classic 32-bit iOS games (ARMv6 / ARMv7, 32-bit Mach-O `MH_EXECUTE`) to the PlayStation Vita.
-This is the iOS counterpart to [`soloader-boilerplate`](https://github.com/Rinnegatamante/soloader-boilerplate) (Android), based on the proven, battle-tested architecture developed in [`Inotia2-vita`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/Inotia2-vita).
+<p align="center">
+  <a href="#-status--playability">Status & Playability</a> •
+  <a href="#setup-instructions-for-players">How to install</a> •
+  <a href="#controls">Controls</a> •
+  <a href="#known-issues">Known Issues</a> •
+  <a href="#build-instructions-for-developers">How to compile</a> •
+  <a href="#credits--acknowledgments">Credits</a>
+</p>
 
----
-
-## Loader Architecture
-
-| Component | File(s) | Role & Emulation Functionality |
-|---|---|---|
-| **Mach-O Loader** | [`source/macho.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/macho.c), [`source/macho.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/macho.h) | Custom static dyld and 32-bit Mach-O executable loader with fixed base address (`MACHO_SLIDE = 0x98000000`). Applies data segment rebases, resolves import tables (`__la_symbol_ptr`, `__nl_symbol_ptr`), and binds stubs for unhandled symbols. |
-| **Assembly Glue & Trampolines** | [`source/asm.S`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/asm.S) | `call_guest` and `call_guest6` (preserve `r9`). `ml_align_call` (bridges iOS 4-byte stack alignment to VitaSDK/newlib 8-byte AAPCS). `ml_unimpl_entry` (auto-logging unimplemented stub). |
-| **Darwin / POSIX Subsystem** | [`source/darwin.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin.c), [`source/darwin.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin.h) | Darwin libc, libgcc, pthreads, and sockets emulation. Thread-safe POSIX wrapper with `SceUID` tracking (prevents fatal crashes on `pthread_detach`). High-precision `mach_absolute_time()` mapped to `sceKernelGetProcessTimeWide()`. |
-| **Variadic Formatter** | [`source/darwin_printf.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin_printf.c), [`source/darwin_printf.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin_printf.h) | Printf engine tailored to Darwin's ARM ABI: reads 64-bit doubles and integers from unaligned word boundaries, with native support for Objective-C's `%@` specifier (`NSString*`). |
-| **Mini-runtime ObjC / UIKit** | [`source/objc.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/objc.c), [`source/objc.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/objc.h) | Fast selector-based dispatching with `objc_msgSend` and `objc_msgSend_stret`. Emulates `NSString`, `UIFont` (rendered using a FreeType glyph atlas), `NSBundle` (`resourcePath`), `NSCalendar`, `UIDevice`, and on-screen keyboard via `sceImeDialog`. |
-| **OpenGL ES Graphics Backend** | [`source/gles.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/gles.c), [`source/gles.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/gles.h), [`source/vitagl_no_splash.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/vitagl_no_splash.c) | GLES1 and GLES2 pipeline powered by vendored `vitaGL` compiled with `SOFTFP_ABI=1`. Virtual FBO supports display orientation rotation and aspect-ratio scaling (portrait/landscape to Vita's native 960x544). Converts `GL_FIXED` vertex arrays and disables blocking splashscreens. |
-| **CgBI PNG Decoder** | [`source/cgbi.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/cgbi.c), [`source/cgbi.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/cgbi.h) | Native decompressor and BGR-to-RGB byte-swap converter for Apple's proprietary CgBI-optimized PNG assets, allowing intact IPA bundles to load directly without offline conversion. |
-| **CoreAudio Backend** | [`source/coreaudio.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/coreaudio.c) | Emulates AudioUnit RemoteIO and AudioSession on a dedicated high-priority `sceAudioOut` audio thread. |
-| **Input Subsystem** | [`source/input.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/input.c), [`source/input.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/input.h) | Maps PS Vita physical buttons and front capacitive multitouch screen to iOS touch events (`UITouchPhaseBegan`, `Moved`, `Ended`). |
-| **Logging Subsystem** | [`source/log.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/log.c), [`source/log.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/log.h) | Rotating on-device file logger (`ux0:data/<slug>/logs/log_001.log` .. `log_999.log`) and live stdout streaming. |
-| **Game Patches & Glue** | [`source/patch.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/patch.c), [`source/patch.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/patch.h) | Dedicated hooks for game-specific memory patches, symbol redirection, and custom bypasses. |
+An unofficial, native **iOS-to-PS Vita wrapper port** of *Crash Bandicoot Nitro Kart 3D* (iOS 1.0, originally developed by **Polarbit** on its Fuse engine). There is no `.so` here: the port ships its own **Mach-O loader**, which maps the original 32-bit ARMv6 iOS executable (`iFuse`) into Vita RAM and replaces the Apple frameworks it uses (Foundation/UIKit, OpenGL ES 1.1, AudioQueue) with native implementations built on **vitaGL** and the Vita system libraries. The game engine runs unmodified.
 
 ---
 
-## Critical iOS on PS Vita ABI Rules
+## 🎮 Status & Playability
 
-1. **`r9` as a Scratch Register**:
-   - In Apple's Darwin ARMv6/v7 ABI, `r9` is an available scratch register (not callee-saved).
-   - In the standard ARM AAPCS (used by VitaSDK/newlib), `r9` is callee-saved or platform-reserved.
-   - **Rule**: The entire loader codebase MUST be compiled with `-ffixed-r9`, and any execution transfer into the game binary must transition through `call_guest` / `call_guest6` in [`source/asm.S`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/asm.S) to prevent register corruption.
-2. **SoftFP Calling Convention**:
-   - iOS 32-bit binaries pass single and double precision floats in integer registers (`r0..r3`).
-   - `vitaGL` MUST be compiled with `SOFTFP_ABI=1` so that internal calls and GXM commands (`sceGxmSetViewport`, etc.) maintain proper argument alignment.
-3. **4-Byte Stack Alignment**:
-   - 32-bit iOS code only enforces 4-byte stack alignment.
-   - VitaSDK newlib functions (especially `printf`, `malloc`, and math routines) expect an 8-byte aligned stack (AAPCS).
-   - All C callbacks invoked by the game binary enter through `ml_align_call` to re-align `sp` to an 8-byte boundary before calling newlib or vitaGL.
-4. **FairPlay DRM Decryption**:
-   - The Mach-O executable in the IPA must be completely decrypted (`cryptid = 0`).
-   - Binaries dumped directly from an encrypted app package will crash immediately with a Data Abort when loaded.
+**Status: PLAYABLE (beta) (v01.00)**
 
----
+On physical hardware the game boots, shows the language menu and the front-end menus, and runs races.
 
-## Included Tools (`tools/`)
-
-- [`tools/macho_prep.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/macho_prep.py): Analyzes thin or fat Mach-O executables, verifies `cryptid == 0`, scans `__DATA` pointers against symbols, and generates `rebase.bin`.
-- [`tools/annotate.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/annotate.py): Disassembles functions, resolving PIC calls, ObjC selectors, classes, and literal strings.
-- [`tools/cgbi_check.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/cgbi_check.py): Verifies and extracts Apple CgBI-compressed PNG files.
-- [`tools/printf_check.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/printf_check.py): Validates variadic string format specifiers and alignment.
-- [`tools/stage_data.sh`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/stage_data.sh): Packages and organizes game assets into `ux0_data/<slug>/`.
-- [`tools/deploy_data.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/deploy_data.py): Incremental FTP deployment directly to the PS Vita (VitaShell).
+- [x] **Mach-O loader**: fixed base `MACHO_SLIDE = 0x98000000`, **2,907** rebase words (2,819 relocated at load), **171** external relocations bound. *Verified on console.*
+- [x] **Graphics**: GLES 1.1 → vitaGL (`SOFTFP_ABI=1`, native `GL_FIXED` arrays). The game draws into a 320×480 portrait FBO, which is rotated onto the 960×544 screen. *Verified on console.*
+- [x] **Screen modes**: fullscreen stretch (default) or the original 3:2 image with black side bars, switchable in the controls menu.
+- [x] **Touch & Controls**: front touch is forwarded as iPhone touches. Buttons inject virtual touches on the HUD. The left stick simulates the iPhone accelerometer for steering.
+- [x] **Controls menu**: START+SELECT opens an in-game remapping menu, modeled on the Zenonia 2 port. Settings are saved to `ux0:data/crashnitro1/config.txt`.
+- [x] **Audio**: the game's AudioQueue output (22,050 Hz, mono, 16-bit) goes to the Vita audio port.
+- [x] **Saves**: progress is written to `ux0:data/crashnitro1/saves/` (the iOS `Documents/` folder).
+- [x] **Performance**: CPU 444 MHz / GPU 222 MHz, frame pacing on vsync (60 FPS cap). `game_run` takes about 3–5 ms per frame in races. The log prints `frame N: … fps=` every 300 frames.
+- [ ] **Intro video**: `MPMoviePlayerController` is not implemented. The movie is skipped and the game continues.
 
 ---
 
-## LiveArea Assets (`extras/livearea/`)
+## Disclaimer
 
-The repository stores all LiveArea presentation assets in [`extras/livearea/`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/extras/livearea):
-- `icon0.png`: 128×128 application icon (official iOS wordmark on light gray `#E5E5EA`).
-- `pic0.png`: 960×544 splash screen ("iPhone OS" in Helvetica Neue typography on charcoal `#202020`).
-- `startup.png`: 280×158 LiveArea startup gate button.
-- `bg0.png`: 840×500 LiveArea background (faceted geometric low-poly mesh in Apple slate gray).
-- `template.xml`: Vita LiveArea layout definition.
+**Crash Bandicoot** and **Crash Nitro Kart** are registered trademarks of **Activision Publishing, Inc.** The work presented in this repository is unofficial and is not produced, endorsed, or sanctioned by Activision, Polarbit or any affiliated entities.
 
-These files are automatically mapped directly into `sce_sys/` inside the output `.vpk` by `vita_create_vpk` in `CMakeLists.txt`.
+This software does NOT contain original game code, binaries, copyrighted graphics, or game assets (see `.gitignore`). The authors do not promote or condone piracy in any way. To play, you must provide your own legally obtained, **decrypted** copy of the `.ipa`.
 
 ---
 
-## Target Console Directory Layout (`ux0:data/<slug>/`)
+## Setup Instructions (For Players)
 
-```
-ux0:data/<slug>/
-  <AppName>.app/   Extracted iOS game bundle (.png, .caf, .fsb, plist assets)
-  rebase.bin       Rebase relocation table generated by tools/macho_prep.py
-  saves/           Game save directory (mapped to iOS Documents/ folder)
-  logs/            Runtime execution logs (log_001.log .. log_999.log)
-```
+1. **CFW & Plugins**: PS Vita on Custom Firmware (**Enso 3.60 / 3.65** recommended) with `kubridge` in `ur0:tai/config.txt`:
+   ```ini
+   *KERNEL
+   ur0:tai/kubridge.skprx
+   ```
+2. **Shader Compiler**: `libshacccg.suprx` must be in `ur0:data/` (extract it with **ShaRKBR33D**).
+3. **Game Files**: a decrypted *Crash Bandicoot Nitro Kart 3D* **1.0** `.ipa` (FairPlay `cryptid 0`). Open it as a ZIP and extract `Payload/iFuse.app/`.
+4. **Copy to the Vita** (`ux0:data/crashnitro1/`):
+   ```
+   ux0:data/crashnitro1/
+     iFuse.app/    the .app folder from the IPA, untouched
+     rebase.bin    generated with tools/macho_prep.py (see Build Instructions)
+     config.txt    created automatically — controls and screen settings
+     saves/        created automatically — your save games
+     logs/         created automatically — crashnitro1_001.log … crashnitro1_999.log, one per run
+   ```
+5. **Install VPK**: install `crashnitro1.vpk` with VitaShell.
 
 ---
 
-## Quick Start & Port Initialization
+## Controls
 
-Using `psvita-toolkit`:
+| Input | Action | Status |
+| :---: | :--- | :---: |
+| **Left Stick** | Steer (simulated accelerometer tilt) | ✅ Working |
+| **Cross (✖)** | Accelerate | ✅ Working |
+| **Square (◼) / Circle (●)** | Brake / Drift | ✅ Working |
+| **Triangle (▲)** | Use item | ✅ Working |
+| **Start** | Pause | ✅ Working |
+| **Start + Select** | PS Vita controls menu (pauses the game) | ⚠️ Not yet verified on console |
+| **Touchscreen** | Menus and HUD (iPhone touches) | ✅ Working |
+
+> [!TIP]
+> All the buttons above can be remapped in the **Start + Select** menu: Cross replaces a binding, Square adds a button, Triangle unbinds, Circle saves and closes. The same menu sets steering direction (normal / inverted), stick deadzone and screen mode. You can also edit `ux0:data/crashnitro1/config.txt` by hand (`gas=CROSS,R`).
+
+---
+
+## Display Modes & Limitations
+
+| Mode | Image | Borders |
+| :--- | :--- | :--- |
+| **Fullscreen** (default) | The game's 480×320 image stretched to 960×544 (slightly wider than the original aspect) | None |
+| **Original 3:2** | 816×544, centered | Black bars of 72 px on each side |
+
+---
+
+## Known Issues
+
+- **Intro video skipped**: there is no movie player yet. The game treats the video as finished.
+- **Button positions are fixed**: each button is a virtual touch at a fixed HUD position (480×320 space). If a button has no effect on some screen, the game's button there is at a different place.
+- **Opening the menu may also pause the race**: Start is bound to Pause, and Start is usually pressed a moment before Select.
+- **Steering feel**: the left stick is translated into an accelerometer tilt (up to about 35°). There is no sensitivity setting other than the deadzone.
+- **Crash dumps** are written by the system to `ux0:data/` (not to the game folder).
+
+---
+
+## Build Instructions (For Developers)
+
+### Prerequisites
+
+- [VitaSDK](https://vitasdk.org/) (`$VITASDK`). vitaGL is vendored in `vendor/vitaGL` and CMake builds it automatically with `SOFTFP_ABI=1`.
+- CMake 3.14+, Python 3 (for the tools).
+- A decrypted `iFuse.app` bundle, linked as `game_app` in the repository root (never committed).
+
+### Compilation Commands
+
 ```bash
-# Initialize a new iOS port directly from an IPA file:
-psvita-toolkit init-port --ipa /path/to/game.ipa
+git clone https://github.com/MetalSyntax/Crash-Nitro-Kart-iOS-vita.git
+cd Crash-Nitro-Kart-iOS-vita
+ln -s /path/to/Payload/iFuse.app game_app
 
-# Validate LiveArea assets:
-psvita-toolkit livearea validate
+# rebase.bin from the decrypted executable
+python3 -I tools/macho_prep.py game_app/iFuse ux0_data/crashnitro1/rebase.bin \
+    --report docs/macho_report.txt
 
-# Build vitaGL with SoftFP ABI support:
-cd vendor/vitaGL && ./build_vitagl.sh
+# Stage ux0_data/crashnitro1/ (clean .app + rebase.bin)
+sh tools/stage_data.sh
 
-# Configure and compile the VPK:
-cmake -B build
+cmake -S . -B build
 cmake --build build
 ```
+
+### Deploy & Debug
+
+```bash
+# Game data over FTP (VitaShell, port 1337); saves/ is never overwritten
+python3 -I tools/deploy_data.py --ip <vita-ip>
+
+# Or with psvita-toolkit
+psvita-toolkit deploy --eboot --yes        # eboot.bin only (fast iteration)
+psvita-toolkit analyze logs/<dump>.psp2dmp # analyze a crash dump
+```
+
+To map a guest address from a dump to the original binary, subtract the guest base `0x98000000` and look it up in `otool -tV game_app/iFuse`. Architecture and progress notes: [`PORTING_PLAN.md`](PORTING_PLAN.md) and [`port_progress.md`](port_progress.md) (in Spanish).
+
+Project rules (see `CLAUDE.md`): **one bug per console run, driven by logs**; nothing from the IPA goes into git.
+
+---
+
+## Credits & Acknowledgments
+
+- **Crash Bandicoot Nitro Kart 3D** is intellectual property of **Activision**, built by **Polarbit** on the Fuse engine.
+- **vitaGL** graphics library by [Rinnegatamante](https://github.com/Rinnegatamante/vitaGL).
+- **kubridge** plugin by [Bythos](https://github.com/bythos14/kubridge).
+- Controls menu design from the [Zenonia 2 PS Vita port](https://github.com/MetalSyntax/Zenonia2-psvita-port). Mach-O loader from the [Skater Nation PS Vita port](https://github.com/MetalSyntax/Skater-Nation-vita).
+- 8×8 menu font from the PSP/Vita debugScreen (BSD license).
+- Special thanks to the PS Vita homebrew and porting community.
 
 ---
 
