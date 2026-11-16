@@ -1,0 +1,173 @@
+Binario: ux0_data/crashnitro1/iFuse.app/iFuse (armv6)
+FairPlay cryptid: 0 (descifrado)
+Rango imagen: 0x1000-0x6c000
+Rebase: 1562 palabras -> ux0_data/crashnitro1/rebase.bin
+  __cfstring           cstr           2
+  __const              cstr           237
+  __const              func           659
+  __const              interior       3
+  __const              sym            138
+  __const_coal         func           6
+  __const_coal         sym            20
+  __data               cstr           150
+  __data               func           33
+  __data               interior       22
+  __data               sym            21
+  __dyld               sym            4
+  __nl_symbol_ptr      local          88
+  __objc_classlist     sym            3
+  __objc_classrefs     sym            1
+  __objc_protolist     interior       2
+  __objc_selrefs       cstr           66
+  __objc_superrefs     sym            2
+  __symbol_stub4       la_ptr         105
+Rechazadas (en rango, sin símbolo válido): {'__const': 2746, '__data': 1, '__dyld': 1, '__gcc_except_tab': 28}
+Objetos descartados (tablas mixtas): 13
+  __ZN18PMusicModulePlayer15xm_linear_tableE ok=129 malas=427
+  _cartdeftbl ok=30 malas=170
+  _PSinTab ok=12 malas=970
+  _breaking_crate ok=7 malas=179
+  _lenfix.2308 ok=6 malas=22
+  _camStartSeq ok=3 malas=4
+  _PADPCM_StepTable ok=2 malas=154
+  _ASinTable0000 ok=1 malas=4
+  _ATanTable ok=1 malas=4
+  _order.2359 ok=1 malas=5
+  _base_dist ok=1 malas=5
+  _MainMenu ok=1 malas=8
+  _TutorialMenuPaused ok=1 malas=2
+Relocs externas: 171; imports únicos: 134
+  _AudioQueueAllocateBuffer
+  _AudioQueueDispose
+  _AudioQueueEnqueueBuffer
+  _AudioQueueNewOutput
+  _AudioQueuePause
+  _AudioQueueStart
+  _AudioQueueStop
+  _AudioServicesGetProperty
+  _AudioServicesPlaySystemSound
+  _MPMoviePlayerPlaybackDidFinishNotification
+  _NSLog
+  _OBJC_CLASS_$_CAEAGLLayer
+  _OBJC_CLASS_$_EAGLContext
+  _OBJC_CLASS_$_MPMoviePlayerController
+  _OBJC_CLASS_$_NSAutoreleasePool
+  _OBJC_CLASS_$_NSBundle
+  _OBJC_CLASS_$_NSDictionary
+  _OBJC_CLASS_$_NSNotificationCenter
+  _OBJC_CLASS_$_NSNumber
+  _OBJC_CLASS_$_NSObject
+  _OBJC_CLASS_$_NSString
+  _OBJC_CLASS_$_NSTimer
+  _OBJC_CLASS_$_NSURL
+  _OBJC_CLASS_$_UIAccelerometer
+  _OBJC_CLASS_$_UIView
+  _OBJC_METACLASS_$_NSObject
+  _OBJC_METACLASS_$_UIView
+  _UIApplicationMain
+  __Unwind_SjLj_Register
+  __Unwind_SjLj_Resume
+  __Unwind_SjLj_Unregister
+  __ZTVN10__cxxabiv117__class_type_infoE
+  __ZTVN10__cxxabiv120__si_class_type_infoE
+  __ZTVN10__cxxabiv121__vmi_class_type_infoE
+  __ZdaPv
+  __ZdlPv
+  __Znam
+  __Znwm
+  ___CFConstantStringClassReference
+  ___adddf3vfp
+  ___addsf3vfp
+  ___cxa_pure_virtual
+  ___divdi3
+  ___divsf3vfp
+  ___divsi3
+  ___fixdfsivfp
+  ___fixsfsivfp
+  ___floatsidfvfp
+  ___floatsisfvfp
+  ___gxx_personality_sj0
+  ___modsi3
+  ___muldf3vfp
+  ___muldi3
+  ___mulsf3vfp
+  ___subsf3vfp
+  ___udivsi3
+  ___umodsi3
+  __objc_empty_cache
+  __objc_empty_vtable
+  _close
+  _exit
+  _fclose
+  _fopen
+  _fprintf
+  _free
+  _fstat
+  _getenv
+  _gettimeofday
+  _glAlphaFuncx
+  _glBindFramebufferOES
+  _glBindRenderbufferOES
+  _glBindTexture
+  _glBlendFunc
+  _glCheckFramebufferStatusOES
+  _glClear
+  _glClearColorx
+  _glColor4x
+  _glColorPointer
+  _glCullFace
+  _glDeleteFramebuffersOES
+  _glDeleteRenderbuffersOES
+  _glDeleteTextures
+  _glDepthMask
+  _glDepthRangex
+  _glDisable
+  _glDisableClientState
+  _glDrawArrays
+  _glDrawElements
+  _glEnable
+  _glEnableClientState
+  _glFramebufferRenderbufferOES
+  _glFrontFace
+  _glGenFramebuffersOES
+  _glGenRenderbuffersOES
+  _glGenTextures
+  _glGetError
+  _glGetIntegerv
+  _glGetRenderbufferParameterivOES
+  _glHint
+  _glLoadMatrixx
+  _glMaterialx
+  _glMaterialxv
+  _glMatrixMode
+  _glNormalPointer
+  _glRenderbufferStorageOES
+  _glScissor
+  _glShadeModel
+  _glTexCoordPointer
+  _glTexEnvxv
+  _glTexImage2D
+  _glTexParameterx
+  _glVertexPointer
+  _glViewport
+  _kCFRunLoopCommonModes
+  _kEAGLColorFormatRGB565
+  _kEAGLDrawablePropertyColorFormat
+  _kEAGLDrawablePropertyRetainedBacking
+  _lseek
+  _malloc
+  _memcpy
+  _memset
+  _mkdir
+  _objc_msgSend
+  _objc_msgSendSuper2
+  _objc_msgSend_stret
+  _objc_setProperty
+  _open
+  _printf
+  _read
+  _remove
+  _setenv
+  _sprintf
+  _strlen
+  _write
