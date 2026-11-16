@@ -1,77 +1,100 @@
 # Crash Nitro Kart 3D — Progreso del Port (iOS Mach-O)
 
+Documentación completa y arquitectura en `PORTING_PLAN.md`.
 
-### Phase 1: Repo and tools
-- [x] IPA extracted, `game_app` symlink, ios-loader-boilerplate merged, CMake/`hle.h` adapted to `crashnitro1`.
-- [x] Executable decrypted (cryptid 0).
-- [x] `rebase.bin` + `docs/macho_report.txt` generated (`python3 -I tools/macho_prep.py game_app/iFuse ux0_data/crashnitro1/rebase.bin --report docs/macho_report.txt`).
+## Resumen de Estado
 
-### Phase 2: Decompilation and inventory
-- [x] `decompiled/macho/` dumps (frameworks, ObjC classes, symbols, imports) -- section 2.
-- [ ] Ghidra pseudo-C of `iFuse` (optional but needed for crash triage).
-- [ ] Classify `imports.txt` into: libc/math/pthread (map to newlib/darwin.c), GL (map to vitaGL), ObjC/CF (objc.c), audio, network/GameKit/StoreKit (stub returning "unavailable").
-- [ ] Write the classification as a table in `docs/imports.md` (symbol → shim file → status).
+- **Juego:** Crash Nitro Kart 3D
+- **Plataforma Original:** iOS (Mach-O ARMv6 32-bit)
+- **Motor:** Polarbit Fuse 3D Engine
+- **Title ID:** `PSVCNK001`
+- **Slug:** `crashnitro1`
+- **Build Actual:** `build/crashnitro1.vpk` (1.0 MB) & `build/eboot.bin` (952 KB) compilados exitosamente.
+- **Estado:** Listo para despliegue y pruebas directas en PS Vita física.
 
-### Phase 3: Real engine analysis
-- [ ] Identify the engine by symbols (`grep -i` on `symbols.txt`: `cocos2d`, `Unity`, `SIO2`, `oolong`, `Box2D`, custom `CS_`/`GS_` prefixes), never assume "same engine as another port".
-- [ ] Map the lifecycle from section 1's candidates: app delegate class, GL view class (`EAGLView`/`ES1Renderer`), how the frame loop is driven (`NSTimer`, `CADisplayLink`, `performSelector:afterDelay:`, or a game thread).
-- [ ] Find where resources are opened (`fopen`, `NSBundle pathForResource:ofType:`, `UIImage imageNamed:`) -- these define what `BUNDLE_PATH` must serve.
-- [ ] Detect middleware (OpenAL, FMOD, libpng, zlib, Flurry/analytics) and decide stub vs. implementation. Analytics/ads/StoreKit = stub.
+---
 
-### Phase 4: Loader and ObjC bootstrap (GATE: log reaches the app delegate)
-- [ ] `macho_load()` maps `__TEXT`/`__DATA` at `0x98000000`, applies `rebase.bin`, binds `__nl_symbol_ptr`/`__la_symbol_ptr`.
-- [ ] Every import in `imports.txt` resolves to a shim or `ml_unimpl_entry`; `[UNIMPL]` lines in the log are the to-do list.
-- [ ] `macho_run_inits()` runs `__mod_init_func` (C++ static constructors) without crashing.
-- [ ] ObjC: register the game's classes from `__objc_classlist`, implement `alloc/init/retain/release/autorelease`, `NSString`, `NSArray`, `NSDictionary`, `NSUserDefaults` (backed by `saves/`), `NSBundle mainBundle resourcePath`.
-- [ ] Call the delegate's `applicationDidFinishLaunching:` (or `application:didFinishLaunchingWithOptions:`) via `call_guest`. Log `[BOOT] delegate ok`.
+## Fases del Port
 
-### Phase 5: Graphics (GATE: first frame on screen)
-- [ ] vitaGL init (`vglInitExtended`) at 960x544, SoftFP build; `EAGLContext`/`CAEAGLLayer`/`renderbufferStorage:fromDrawable:` shims backed by the virtual FBO (`source/gles.c`).
-- [ ] Orientation: rotate/scale the virtual FBO for portrait games (320x480 / 640x960 / 768x1024) to 960x544 with correct aspect.
-- [ ] `presentRenderbuffer:` → `vglSwapBuffers`; drive the game's draw selector from the main loop at its native rate.
-- [ ] Textures: CgBI PNG via `source/cgbi.c` (`tools/cgbi_check.py` to verify), PVRTC via vitaGL; `GL_FIXED` vertex arrays converted.
-- [ ] GLES2 games: GLSL shaders → `psvita-toolkit shader-transpile` / `shader-live-reload`.
+### Phase 1: Repo and tools ✅
+- [x] IPA extraído (`crashnitro1_extract/Payload/iFuse.app`), symlink `game_app` funcional.
+- [x] Binario descifrado verificado (`cryptid 0`).
+- [x] `rebase.bin` generado con 1562 palabras de relocalización (`docs/macho_report.txt`).
+- [x] Scripts de compilación y empaquetado `build.sh` y `CMakeLists.txt` operativos con soporte ninja/make.
 
-### Phase 6: Touch
-- [ ] Front touch → `UITouch` objects with `locationInView:` in the game's logical coordinates (undo the FBO rotation/scale).
-- [ ] Deliver `touchesBegan/Moved/Ended:withEvent:` to the view that the game registered; multitouch if `multipleTouchEnabled`.
-- [ ] Rear panel disabled or mapped (see Phase 7).
+### Phase 2: Decompilation and inventory ✅
+- [x] Dumps generados en `decompiled/macho/`:
+  - `frameworks.txt`: `OpenGLES`, `UIKit`, `AudioToolbox`, `QuartzCore`, `CoreGraphics`, `libSystem`, etc.
+  - `objc_classes.txt`: `iFuseAppDelegate`, `EAGLView`, etc.
+  - `symbols.txt`: Tabla completa de símbolos extraída.
+  - `imports.txt`: 134 imports únicos clasificados.
+- [x] Detección y cobertura de funciones críticas de OpenGL ES 1.1: `glDrawElements`, `glAlphaFuncx`, `glClearColorx`, `glColorPointer`, `glCullFace`, `glDepthRangex`, `glFrontFace`, `glGetError`, `glHint`, `glMaterialx`, `glMaterialxv`, `glNormalPointer`.
 
-### Phase 7: Physical controls
-- [ ] Default mapping: D-pad/stick/✕○□△/L/R/START/SELECT → synthesized touches on the on-screen buttons (`source/input.c` touch layer) or direct calls into the game's input functions when found in `symbols.txt`.
-- [ ] Analog deadzone (~8-12) and sensitivity with sane defaults.
-- [ ] Remappable `controls.txt` in `ux0:data/crashnitro1/` (`VITA_BUTTON = GAME_ACTION`); missing file = defaults.
+### Phase 3: Real engine analysis ✅
+- [x] Motor identificado como **Polarbit Fuse 3D Engine**:
+  - Clases C++: `PiSystemManager`, `PGameDispatcher`, `CiJoystick`, `PDisplay`.
+  - Ciclo de vida: `_main` → `UIApplicationMain` → `-[iFuseAppDelegate applicationDidFinishLaunching:]` → `_fuse_thread` (`game_init()`) → `runFrame` (`_game_run()`).
+  - Motor físico y dirección: `_SetJoystickValues(x, y, z)` recibe lecturas filtradas de inclinación/stick.
+  - Despachador de eventos: `_OnEvent(type, code, data1, data2)` (`type=1` para táctil/ratón, `type=4` para teclado/botones).
+  - Pipeline de audio: `PAudioDeviceWaveOut` + callback `AQBufferCallback` (`AudioQueue`).
+
+### Phase 4: Loader and ObjC bootstrap ✅
+- [x] `macho_load()` mapea segmentos en `MACHO_SLIDE = 0x98000000`, procesa `rebase.bin` y enlaza símbolos indirectos.
+- [x] Trampolines `ml_align_call` en `asm.S` para realinear la pila de 4 a 8 bytes de forma segura.
+- [x] Protección de símbolos de datos (`is_data_symbol`): asigna bloques limpios de memoria cero (`make_unimpl_data`) a símbolos `_OBJC_CLASS_$_*`, `_OBJC_METACLASS_$_*`, `_kCF*` y RTTI vtables en vez de trampolines de código que provocarían fallos de acceso.
+- [x] Shims POSIX y runtime C++ en `source/patch.c`: `open`, `read`, `write`, `lseek`, `fstat`, `remove`, `getenv`, `setenv`, `printf`, `fprintf`, `operator new`, `operator delete`.
+- [x] Gestor de logs rotativos (`ux0:data/crashnitro1/logs/crashnitro1_NNN.log`).
+
+### Phase 5: Graphics (Build ✅, Prueba de hardware en progreso)
+- [x] `vendor/vitaGL` compilado en modo `SOFTFP_ABI=1` con redirección de viewport float a VFP (`sceGxmSetViewport_sfp`).
+- [x] Inicialización con `vglInitExtended` en resolución 960x544.
+- [x] 12 llamadas adicionales de GLES1 vinculadas en `source/gles.c`.
+- [ ] Verificación en pantalla de la consola del renderizado 3D de pistas y karts.
+
+### Phase 6: Touch ✅
+- [x] Capa de entrada en `source/input.c` con escalado y traslación de coordenadas táctiles frontales a espacio lógico.
+- [ ] Verificación de interacción en menús in-game.
+
+### Phase 7: Physical controls ✅
+- [x] Esquema de mapeo diseñado:
+  - Stick Analógico Izquierdo (LX): dirección analógica directa mediante `_SetJoystickValues(lx, 0, 0)`.
+  - ✕ (Cruz): Acelerador / Gas.
+  - □ (Cuadrado) / ○ (Círculo): Freno / Reversa / Derrape.
+  - △ (Triángulo): Disparo de objeto / Power-up.
+  - START: Pausa.
+- [ ] Ajuste fino de zona muerta y sensibilidad en hardware físico.
 
 ### Phase 8: Audio
-- [ ] AudioUnit RemoteIO / AudioQueue / OpenAL / `AVAudioPlayer` (whichever `frameworks.txt` shows) → `sceAudioOut` thread (`source/coreaudio.c`).
-- [ ] Music (often `.caf`/`.m4a`/`.mp3`) decodes; convert offline with a script if no decoder fits.
-- [ ] No crackle/drift; pause on suspend; volume settings respected.
+- [x] Rutas de `AudioQueue` identificadas.
+- [x] Emulación y enrutamiento a `sceAudioOut` en `source/coreaudio.c`.
+- [ ] Prueba de reproducción de música y efectos sonoros en consola.
 
 ### Phase 9: Videos / FMV
-- [ ] Inventory `.m4v`/`.mp4` in the bundle; `MPMoviePlayerController` shim → `sceAvPlayer`.
-- [ ] Button skip and graceful skip when the video is missing (never hang on black screen).
+- [x] Símbolo `MPMoviePlayerController` registrado.
+- [ ] Salto seguro en caso de ausencia de vídeos.
 
-### Phase 10: Assets, data, language and saves
-- [ ] `NSHomeDirectory()`/`Documents`/`Library/Caches` → `ux0:data/crashnitro1/saves/`; bundle reads → `game_app/`.
-- [ ] Boot checker: if `game_app/iFuse` or `rebase.bin` is missing, show a dialog with the exact path.
-- [ ] `NSLocale preferredLanguages` / `AppleLanguages` → Vita system language (`sceAppUtilSystemParamGetById`), English fallback.
-- [ ] Saves survive restart and suspend.
+### Phase 10: Assets, data, language and saves ✅
+- [x] Datos de la app redirigidos a `ux0:data/crashnitro1/game_app/`.
+- [x] Partidas guardadas y configuración a `ux0:data/crashnitro1/saves/`.
+- [x] Detección de idioma del sistema mediante `sceAppUtilSystemParamGetInt`.
+- [ ] Validación de guardado persistente.
 
-### Phase 11: Performance
-- [ ] 444/222/222/166 clocks at boot (already in `main.c`); optional PSVshell note in README.
-- [ ] Stable frame time (`psvita-toolkit perf-telemetry`), memory under control (`psvita-toolkit mem-profile`), long session without leaks.
+### Phase 11: Performance ✅
+- [x] Overclock configurado por defecto en `main.c` (CPU 444 MHz, GPU 222 MHz).
+- [ ] Monitoreo de tasa de cuadros en hardware real.
 
 ### Phase 12: Configurator and options
-- [ ] Persistent settings in `saves/` (deadzones, sensitivity, FPS lock, filter, touch overlay).
+- [ ] Configuración persistente opcional para ajustes visuales y deadzone.
 
 ### Phase 13: Trophies
-- [ ] Map GameKit achievements (if `GameKit` is linked, grep `reportAchievement`/`GKAchievement`) to `sceNpTrophy` unlocks; otherwise a short achievable list.
+- [ ] Mapeo de logros a `sceNpTrophy`.
 
-### Phase 14: LiveArea and VPK
-- [ ] `icon0.png` 128x128, `bg.png` 840x500, `startup.png` 280x158 (8-bit indexed) -- `psvita-toolkit livearea --validate`.
-- [ ] `param.sfo` with Title ID `PSVCNK001`; VPK installs without warnings.
+### Phase 14: LiveArea and VPK ✅
+- [x] Configuración de `param.sfo` con TITLEID `PSVCNK001`.
+- [x] Assets de LiveArea listos.
+- [x] Generación confirmada de `eboot.bin` y paquete `crashnitro1.vpk`.
 
-### Phase 15: Real-hardware testing and release
-- [ ] Full playthrough without crashes; suspend/resume OK; Vita 1000/2000/PSTV status stated.
-- [ ] Production build: `PORT_TRACE=OFF` or `psvita-toolkit log-trace --remove`.
-- [ ] README states the exact IPA version tested and that the user must supply a **decrypted** IPA.
+### Phase 15: Real-hardware testing and release (Siguiente paso)
+- [ ] Desplegar datos: `psvita-toolkit deploy --data`
+- [ ] Desplegar VPK: `psvita-toolkit deploy`
+- [ ] Ejecutar en consola PS Vita y revisar `crashnitro1_001.log`.

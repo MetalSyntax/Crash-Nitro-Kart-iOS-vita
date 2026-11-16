@@ -112,6 +112,19 @@ static uintptr_t make_unimpl_thunk(const char *name) {
     return make_thunk(unimpl_count++, ml_unimpl_entry);
 }
 
+static int is_data_symbol(const char *name) {
+    if (!name) return 0;
+    if (strncmp(name, "_OBJC_CLASS_$_", 14) == 0) return 1;
+    if (strncmp(name, "_OBJC_METACLASS_$_", 18) == 0) return 1;
+    if (strncmp(name, "_OBJC_IVAR_$_", 13) == 0) return 1;
+    if (strncmp(name, "__objc_", 7) == 0) return 1;
+    if (strncmp(name, "___CF", 5) == 0) return 1;
+    if (strncmp(name, "_kCF", 4) == 0) return 1;
+    if (strncmp(name, "_kEAGL", 6) == 0) return 1;
+    if (strncmp(name, "__ZTV", 5) == 0) return 1;
+    return 0;
+}
+
 static uintptr_t make_unimpl_data(const char *name) {
     static struct {
         const char *name;
@@ -358,11 +371,12 @@ int macho_load(const char *bin_path, const char *rebase_path) {
         uint32_t *indirect = (uint32_t *)(d + dysym->indirectsymoff);
         for (int s_idx = 0; s_idx < nsects_total; s_idx++) {
             section *s = sects[s_idx];
-            if (s->type == S_NON_LAZY_SYMBOL_POINTERS || s->type == S_LAZY_SYMBOL_POINTERS) {
+            uint32_t type = s->flags & 0xFF;
+            if (type == S_NON_LAZY_SYMBOL_POINTERS || type == S_LAZY_SYMBOL_POINTERS) {
                 uint32_t nslots = s->size / 4;
                 uint32_t *slots = (uint32_t *)(MACHO_SLIDE + s->addr);
                 for (uint32_t i = 0; i < nslots; i++) {
-                    uint32_t sym_idx = indirect[s->r1 + i];
+                    uint32_t sym_idx = indirect[s->reserved1 + i];
                     if (sym_idx & INDIRECT_SYMBOL_LOCAL) {
                         slots[i] += MACHO_SLIDE;
                     } else if (!(sym_idx & INDIRECT_SYMBOL_ABS)) {
@@ -375,7 +389,11 @@ int macho_load(const char *bin_path, const char *rebase_path) {
                                 slots[i] = make_thunk(imp->addr, ml_align_call);
                             }
                         } else {
-                            slots[i] = make_unimpl_thunk(name);
+                            if (is_data_symbol(name)) {
+                                slots[i] = make_unimpl_data(name);
+                            } else {
+                                slots[i] = make_unimpl_thunk(name);
+                            }
                         }
                     }
                 }

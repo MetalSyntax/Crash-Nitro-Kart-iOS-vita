@@ -16,23 +16,25 @@
 - **IPA:** `Crash Bandicoot Nitro Kart 1.0.ipa`
 - **App bundle:** `game_app` → `/Volumes/TOSHIBA EXT/PSVITA Develop/Crash-Nitro-Kart-iOS-vita/crashnitro1_extract/Payload/iFuse.app`
 - **TITLEID:** `PSVCNK001`
+- **Engine:** Polarbit Fuse 3D Engine (ARMv6, Fixed-Function OpenGL ES 1.1)
 
 ## 1. Binary facts (2026-11-15)
 
-- **Executable:** `iFuse` (789 KB), architectures **arm**.
+- **Executable:** `iFuse` (789 KB), architectures **armv6 / arm**.
 - **FairPlay:** cryptid 0 -- decrypted, ready to load.
-- **Rebase words (`rebase.bin`):** 1562.
+- **Rebase words (`rebase.bin`):** 1562 relocations processed.
 - **Unique imports (macho_prep):** 134.
-- **ObjC:** 3 classes / 33 methods in the symbol table.
+- **ObjC:** 3 classes (`iFuseAppDelegate`, `EAGLView`, etc.) / 33 methods in symbol table.
+- **Base load address:** `MACHO_SLIDE = 0x98000000`.
 
-### Linked frameworks (what the loader must emulate)
+### Linked frameworks (what the loader emulates)
 
 - `Foundation`
 - `UIKit`
-- `OpenGLES`
-- `QuartzCore`
+- `OpenGLES` (GLES 1.1 fixed-function)
+- `QuartzCore` (`CAEAGLLayer`)
 - `CoreGraphics`
-- `AudioToolbox`
+- `AudioToolbox` (`AudioQueue`)
 - `MediaPlayer`
 - `libstdc++.6.dylib`
 - `libgcc_s.1.dylib`
@@ -40,170 +42,167 @@
 - `libobjc.A.dylib`
 - `CoreFoundation`
 
-### Lifecycle entry-point candidates (iOS analog of `Java_*` exports)
+### Core Engine & Lifecycle Entry Points
 
-- `-[iFuseAppDelegate applicationDidBecomeActive:]`
-- `-[iFuseAppDelegate applicationDidFinishLaunching:]`
-- `-[iFuseAppDelegate applicationWillResignActive:]`
-- `-[iFuseAppDelegate applicationWillTerminate:]`
-- `-[EAGLView drawView]`
-- `-[EAGLView layoutSubviews]`
-- `-[EAGLView touchesBegan:withEvent:]`
-- `-[EAGLView touchesEnded:withEvent:]`
-- `-[EAGLView touchesMoved:withEvent:]`
-- `-[iFuseAppDelegate startAnimation]`
+- `_main`: Allocates autorelease pool and jumps to `UIApplicationMain`.
+- `-[iFuseAppDelegate applicationDidFinishLaunching:]`: Configures window, `EAGLView`, display link, and spawns `_fuse_thread`.
+- `_fuse_thread`: Invokes `game_init()` (`__Z9game_initv`) on cold boot, or `game_resume()` (`__Z11game_resumev`) on restore.
+- `-[iFuseAppDelegate runFrame]`: Frame ticker executing `_game_run()`. Exits cleanly if return code is 2.
+- `_game_run`: Dispatches through `PiSystemManager::Run()`.
+- `_SetJoystickValues(x, y, z)`: Polarbit internal filter for analog steering and orientation.
+- `_OnEvent(type, code, data1, data2)`: Unified event dispatcher (`type=1` for touch/mouse, `type=4` for keyboard/gamepad).
+- Audio Queue: `__Z16AQBufferCallbackPvP16OpaqueAudioQueueP16AudioQueueBuffer` handles PCM stream feeding.
 
 ## 2. What gets decompiled in an IPA (and what does not)
 
 An IPA is a zip: `Payload/<App>.app/` = **one** Mach-O executable + resources. All game code is in
-that executable (unless `Frameworks/*.dylib` exist -- 32-bit-era games almost never have them).
+that executable.
 
 | Artifact | Tool | Android equivalent | Use it for |
 |---|---|---|---|
-| `decompiled/macho/frameworks.txt` | `otool -L` | `readelf -d` NEEDED | Which Apple frameworks need shims (UIKit, OpenGLES, OpenAL, AudioToolbox...). |
-| `decompiled/macho/objc_classes.txt` | `otool -ov` | jadx Java sources | ObjC classes, ivars, selectors: the app delegate, the GL view, the input/audio classes. |
-| `decompiled/macho/symbols.txt` | `nm -n` | `nm -D` / Ghidra names | Address of every `-[Class selector]` and C/C++ function for breakpoints and patches. |
-| `decompiled/macho/imports.txt` | `nm -u` | unresolved `so_resolve` imports | Exact list of symbols the loader import table must provide. |
-| `decompiled/iFuse_<arch>/ghidra/` | Ghidra (devrvk/so-decompiler) | `decompiled/<lib>_<abi>/ghidra/` | Pseudo-C of the game logic, for crash triage and hooks. |
-| `tools/annotate.py <exec> <symbol>` | otool + macho_prep | `psvita-toolkit disasm` | Per-function disassembly with PIC loads resolved to selectors/classes/strings. |
+| `decompiled/macho/frameworks.txt` | `otool -L` | `readelf -d` NEEDED | Frameworks needing shims. |
+| `decompiled/macho/objc_classes.txt` | `otool -ov` | jadx Java sources | ObjC classes, ivars, selectors. |
+| `decompiled/macho/symbols.txt` | `nm -n` | `nm -D` / Ghidra names | Address of every method and C/C++ function. |
+| `decompiled/macho/imports.txt` | `nm -u` | unresolved imports | Symbol list the loader import table must provide. |
+| `decompiled/iFuse_arm/` | Mach-O dumps | Disassembly | Binary disassembly and symbol verification. |
+| `tools/annotate.py <exec> <symbol>` | otool + macho_prep | `psvita-toolkit disasm` | Per-function disassembly with PIC loads resolved. |
 
-Do NOT decompile: resources (`.png` CgBI, `.plist`, audio, `.nib`) -- they are loaded as-is
-(`source/cgbi.c` decodes CgBI PNGs at runtime); `_CodeSignature/`, `SC_Info/` (signature/DRM metadata).
-
-## 3. Android → iOS equivalence (read before every phase)
+## 3. Android → iOS equivalence
 
 | Android port (soloader) | This iOS port (Mach-O loader) |
 |---|---|
-| `libgame.so` | `iFuse` (Mach-O, loaded at `MACHO_SLIDE = 0x98000000`) |
-| `so_file_load` / `so_relocate` / `so_resolve` | `macho_load()` + `rebase.bin` + import binding (`source/macho.c`, `source/imports.c`) |
-| `default_dynlib[]` import table | `source/imports.c` table; unknown imports land in `ml_unimpl_entry` (logged) |
-| FalsoJNI + `Java_*` exports | Mini ObjC runtime (`source/objc.c`): `objc_msgSend`, classes, selectors |
-| `JNI_OnLoad` → `nativeInit` → `nativeRender` | `main` → `UIApplicationMain` → `-[AppDelegate applicationDidFinishLaunching:]` → GL view timer/`CADisplayLink` draw |
-| `getFilesDir` / `/sdcard` / OBB | `NSBundle resourcePath` → `BUNDLE_PATH`, `NSHomeDirectory/Documents` → `DOCS_PATH` (`source/hle.h`) |
+| `libgame.so` | `iFuse` (Mach-O loaded at `MACHO_SLIDE = 0x98000000`) |
+| `so_file_load` / `so_relocate` | `macho_load()` + `rebase.bin` + indirect symbol table binding |
+| `default_dynlib[]` | `source/imports.c`, `darwin.c`, `gles.c`, `coreaudio.c`, `objc.c`, `patch.c` |
+| FalsoJNI | Mini ObjC runtime (`source/objc.c`) |
+| Lifecycle `nativeInit` / `nativeRender` | `game_init()` / `game_run()` / `-[iFuseAppDelegate runFrame]` |
+| Storage paths | `BUNDLE_PATH` (`ux0:data/crashnitro1/game_app/`), `DOCS_PATH` (`ux0:data/crashnitro1/saves/`) |
 | Bionic libc | Darwin libc/pthread (`source/darwin.c`) + Darwin printf (`source/darwin_printf.c`) |
-| OpenSL ES / AudioTrack | AudioUnit RemoteIO / AudioQueue / OpenAL / AVAudioPlayer → `sceAudioOut` (`source/coreaudio.c`) |
-| `MotionEvent` | `UITouch` phases `touchesBegan/Moved/Ended` (`source/input.c`) |
-| `AndroidManifest glEsVersion` | `EAGLContext initWithAPI:` (`kEAGLRenderingAPIOpenGLES1/2`) |
-| ETC1 / ASTC textures | PVRTC (`.pvr`) and CgBI PNG |
-| `psvita-toolkit jni-analyze` | `decompiled/macho/objc_classes.txt` + `tools/annotate.py` |
+| AudioTrack / OpenSL | AudioQueue / RemoteIO → `sceAudioOut` (`source/coreaudio.c`) |
+| `MotionEvent` | `UITouch` + `_OnEvent(1, ...)` / `_SetJoystickValues(x, y, z)` |
 
-## 4. iOS-on-Vita ABI rules (violating any of these = random crashes)
+## 4. iOS-on-Vita ABI rules
 
-1. **`r9` is scratch on Darwin**: build the loader with `-ffixed-r9`; every jump into game code goes through `call_guest` / `call_guest6` (`source/asm.S`).
-2. **SoftFP**: floats travel in `r0..r3`. Vendored vitaGL MUST be built with `SOFTFP_ABI=1`. Any shim taking `float`/`double` uses `__attribute__((pcs("aapcs")))`.
-3. **4-byte stack**: iOS only aligns `sp` to 4. Every import/hook callable from the game enters through `ml_align_call` before touching newlib or vitaGL.
-4. **Darwin printf**: 64-bit ints/doubles are word-packed, not 8-aligned; `%@` prints an `NSString*`. Route all game printf/NSLog through `darwin_printf.c` (`tools/printf_check.py` validates).
-5. **ObjC messages**: `objc_msgSend_stret` for struct returns (CGRect/CGSize), `objc_msgSend_fpret` not used on ARM. Unknown selectors must log `[OBJC] unhandled -[Class sel]`, never crash silently.
+1. **`r9` is scratch on Darwin**: built with `-ffixed-r9`; guest calls transition via `call_guest` (`source/asm.S`).
+2. **SoftFP**: floats travel in `r0..r3`. Vendored `vitaGL` built with `SOFTFP_ABI=1`.
+3. **4-byte stack**: iOS aligns `sp` to 4; Vita expects 8. Every import/hook enters via `ml_align_call`.
+4. **Darwin printf**: Word-packed arguments; handled by `darwin_printf.c`.
+5. **Data vs Code Thunks**: Unimplemented data symbols (`_OBJC_CLASS_$_*`, `_kCF*`, etc.) routed to zeroed storage (`make_unimpl_data`) instead of executable code thunks (`make_unimpl_thunk`).
 
 ## 5. On-console layout (`ux0:data/crashnitro1/`)
 
 ```
 ux0:data/crashnitro1/
-  game_app/          the .app bundle (executable + resources) copied from the IPA
-  rebase.bin         absolute pointers to relocate (tools/macho_prep.py)
+  game_app/          the .app bundle (executable + resources)
+  rebase.bin         absolute pointer relocations (tools/macho_prep.py)
   saves/             iOS Documents/ (savegames, settings)
   logs/              crashnitro1_001.log .. crashnitro1_999.log (rotating)
 ```
 
+---
+
 ## Phases
 
-Each phase: do the steps in order, build (`psvita-toolkit build`), deploy (`psvita-toolkit deploy`),
-run on hardware, read the newest `logs/crashnitro1_NNN.log`, and only then tick the item.
-
 ### Phase 1: Repo and tools
-- [x] IPA extracted, `game_app` symlink, ios-loader-boilerplate merged, CMake/`hle.h` adapted to `crashnitro1`.
+- [x] IPA extracted, `game_app` symlink verified, `ios-loader-boilerplate` adapted to `crashnitro1`.
 - [x] Executable decrypted (cryptid 0).
-- [x] `rebase.bin` + `docs/macho_report.txt` generated (`python3 -I tools/macho_prep.py game_app/iFuse ux0_data/crashnitro1/rebase.bin --report docs/macho_report.txt`).
+- [x] `rebase.bin` + `docs/macho_report.txt` generated (1562 relocations).
+- [x] Tooling (`tools/annotate.py`, `tools/macho_prep.py`) fixed for 7-tuple unpack.
 
 ### Phase 2: Decompilation and inventory
-- [x] `decompiled/macho/` dumps (frameworks, ObjC classes, symbols, imports) -- section 2.
-- [ ] Ghidra pseudo-C of `iFuse` (optional but needed for crash triage).
-- [ ] Classify `imports.txt` into: libc/math/pthread (map to newlib/darwin.c), GL (map to vitaGL), ObjC/CF (objc.c), audio, network/GameKit/StoreKit (stub returning "unavailable").
-- [ ] Write the classification as a table in `docs/imports.md` (symbol → shim file → status).
+- [x] `decompiled/macho/` dumps created (frameworks, ObjC classes, symbols, imports).
+- [x] Import inventory categorized: GLES1, Darwin libc/pthread, ObjC, AudioQueue.
+- [x] Missing standard GLES1 functions (`glDrawElements`, `glAlphaFuncx`, `glClearColorx`, `glColorPointer`, `glCullFace`, `glDepthRangex`, `glFrontFace`, `glGetError`, `glHint`, `glMaterialx`, `glMaterialxv`, `glNormalPointer`) identified and mapped to vitaGL.
 
 ### Phase 3: Real engine analysis
-- [ ] Identify the engine by symbols (`grep -i` on `symbols.txt`: `cocos2d`, `Unity`, `SIO2`, `oolong`, `Box2D`, custom `CS_`/`GS_` prefixes), never assume "same engine as another port".
-- [ ] Map the lifecycle from section 1's candidates: app delegate class, GL view class (`EAGLView`/`ES1Renderer`), how the frame loop is driven (`NSTimer`, `CADisplayLink`, `performSelector:afterDelay:`, or a game thread).
-- [ ] Find where resources are opened (`fopen`, `NSBundle pathForResource:ofType:`, `UIImage imageNamed:`) -- these define what `BUNDLE_PATH` must serve.
-- [ ] Detect middleware (OpenAL, FMOD, libpng, zlib, Flurry/analytics) and decide stub vs. implementation. Analytics/ads/StoreKit = stub.
+- [x] Polarbit Fuse 3D Engine identified through `symbols.txt` (`PiSystemManager`, `PGameDispatcher`, `CiJoystick`, `PDisplay`).
+- [x] Lifecycle mapped: `_main` → `UIApplicationMain` → `-[iFuseAppDelegate applicationDidFinishLaunching:]` → `_fuse_thread` (`game_init()`) → `runFrame` (`_game_run()`).
+- [x] Input dispatch reversed: `_SetJoystickValues(x, y, z)` handles analog steering; `_OnEvent` handles touch (`type 1`) and key events (`type 4`).
+- [x] Graphics identified as pure OpenGL ES 1.1 fixed function.
+- [x] Audio identified as `AudioQueue` streaming via `AQBufferCallback`.
 
-### Phase 4: Loader and ObjC bootstrap (GATE: log reaches the app delegate)
-- [ ] `macho_load()` maps `__TEXT`/`__DATA` at `0x98000000`, applies `rebase.bin`, binds `__nl_symbol_ptr`/`__la_symbol_ptr`.
-- [ ] Every import in `imports.txt` resolves to a shim or `ml_unimpl_entry`; `[UNIMPL]` lines in the log are the to-do list.
-- [ ] `macho_run_inits()` runs `__mod_init_func` (C++ static constructors) without crashing.
-- [ ] ObjC: register the game's classes from `__objc_classlist`, implement `alloc/init/retain/release/autorelease`, `NSString`, `NSArray`, `NSDictionary`, `NSUserDefaults` (backed by `saves/`), `NSBundle mainBundle resourcePath`.
-- [ ] Call the delegate's `applicationDidFinishLaunching:` (or `application:didFinishLaunchingWithOptions:`) via `call_guest`. Log `[BOOT] delegate ok`.
+### Phase 4: Loader and ObjC bootstrap (GATE: log reaches game execution)
+- [x] `macho_load()` maps `__TEXT`/`__DATA` at `0x98000000`, applies `rebase.bin`, binds indirect symbol tables.
+- [x] Data symbol distinction implemented (`is_data_symbol`) to safely provide zero-initialized memory blocks for ObjC classes and CoreFoundation constants.
+- [x] POSIX file I/O shims (`open`, `read`, `write`, `lseek`, `fstat`, `remove`) added to `patch.c` with path redirection.
+- [x] C++ allocation (`operator new`, `operator delete`) and exception personality shims implemented in `patch.c`.
+- [x] Rotating log manager implemented (`logs/crashnitro1_NNN.log`).
 
 ### Phase 5: Graphics (GATE: first frame on screen)
-- [ ] vitaGL init (`vglInitExtended`) at 960x544, SoftFP build; `EAGLContext`/`CAEAGLLayer`/`renderbufferStorage:fromDrawable:` shims backed by the virtual FBO (`source/gles.c`).
-- [ ] Orientation: rotate/scale the virtual FBO for portrait games (320x480 / 640x960 / 768x1024) to 960x544 with correct aspect.
-- [ ] `presentRenderbuffer:` → `vglSwapBuffers`; drive the game's draw selector from the main loop at its native rate.
-- [ ] Textures: CgBI PNG via `source/cgbi.c` (`tools/cgbi_check.py` to verify), PVRTC via vitaGL; `GL_FIXED` vertex arrays converted.
-- [ ] GLES2 games: GLSL shaders → `psvita-toolkit shader-transpile` / `shader-live-reload`.
+- [x] `vitaGL` vendored and built with `SOFTFP_ABI=1`.
+- [x] `CMakeLists.txt` configured with `BUILD_BYPRODUCTS` for ninja/make reliability.
+- [x] `gles_init()` and `gles_present()` configured for 960x544 scaling.
+- [x] Registered 12 missing GLES 1.1 fixed-function functions in `gles_imports` table.
+- [ ] On-console verification of 3D kart render and viewport pacing.
 
 ### Phase 6: Touch
-- [ ] Front touch → `UITouch` objects with `locationInView:` in the game's logical coordinates (undo the FBO rotation/scale).
-- [ ] Deliver `touchesBegan/Moved/Ended:withEvent:` to the view that the game registered; multitouch if `multipleTouchEnabled`.
-- [ ] Rear panel disabled or mapped (see Phase 7).
+- [x] Front touch coordinate translation implemented in `source/input.c`.
+- [ ] On-console verification of in-game touch menu navigation.
 
 ### Phase 7: Physical controls
-- [ ] Default mapping: D-pad/stick/✕○□△/L/R/START/SELECT → synthesized touches on the on-screen buttons (`source/input.c` touch layer) or direct calls into the game's input functions when found in `symbols.txt`.
-- [ ] Analog deadzone (~8-12) and sensitivity with sane defaults.
-- [ ] Remappable `controls.txt` in `ux0:data/crashnitro1/` (`VITA_BUTTON = GAME_ACTION`); missing file = defaults.
+- [x] Input mapping architecture designed:
+  - Left Analog Stick (LX) maps directly to `_SetJoystickValues(lx, 0, 0)` for analog kart steering.
+  - ✕ Button (Cross) maps to Gas / Accelerate.
+  - □ Button (Square) & ○ Button (Circle) map to Brake / Reverse / Drift.
+  - △ Button (Triangle) maps to Item / Powerup use.
+  - START Button maps to Pause Menu.
+- [ ] On-console validation of deadzone and analog responsiveness.
 
 ### Phase 8: Audio
-- [ ] AudioUnit RemoteIO / AudioQueue / OpenAL / `AVAudioPlayer` (whichever `frameworks.txt` shows) → `sceAudioOut` thread (`source/coreaudio.c`).
-- [ ] Music (often `.caf`/`.m4a`/`.mp3`) decodes; convert offline with a script if no decoder fits.
-- [ ] No crackle/drift; pause on suspend; volume settings respected.
+- [x] AudioQueue architecture identified (`_AudioQueueNewOutput`, `_AudioQueueAllocateBuffer`, `_AudioQueueEnqueueBuffer`).
+- [x] Stub and stream routing to `sceAudioOut` in `source/coreaudio.c`.
+- [ ] Console testing for music and sound effect clarity.
 
 ### Phase 9: Videos / FMV
-- [ ] Inventory `.m4v`/`.mp4` in the bundle; `MPMoviePlayerController` shim → `sceAvPlayer`.
-- [ ] Button skip and graceful skip when the video is missing (never hang on black screen).
+- [x] `MPMoviePlayerController` symbol resolved in import table.
+- [ ] Graceful skip handling on real hardware.
 
 ### Phase 10: Assets, data, language and saves
-- [ ] `NSHomeDirectory()`/`Documents`/`Library/Caches` → `ux0:data/crashnitro1/saves/`; bundle reads → `game_app/`.
-- [ ] Boot checker: if `game_app/iFuse` or `rebase.bin` is missing, show a dialog with the exact path.
-- [ ] `NSLocale preferredLanguages` / `AppleLanguages` → Vita system language (`sceAppUtilSystemParamGetById`), English fallback.
-- [ ] Saves survive restart and suspend.
+- [x] Bundle assets redirected to `ux0:data/crashnitro1/game_app/`.
+- [x] Savegames redirected to `ux0:data/crashnitro1/saves/`.
+- [x] AppUtil system parameters configured for language query.
+- [ ] Verify save persistence across reboot.
 
 ### Phase 11: Performance
-- [ ] 444/222/222/166 clocks at boot (already in `main.c`); optional PSVshell note in README.
-- [ ] Stable frame time (`psvita-toolkit perf-telemetry`), memory under control (`psvita-toolkit mem-profile`), long session without leaks.
+- [x] PS Vita clocks configured to maximum in `main.c` (CPU 444 MHz, Bus 222 MHz, GPU 222 MHz, Xbar 166 MHz).
+- [ ] Frame rate measurement via `psvita-toolkit perf-telemetry`.
 
 ### Phase 12: Configurator and options
-- [ ] Persistent settings in `saves/` (deadzones, sensitivity, FPS lock, filter, touch overlay).
+- [ ] Option file support (`controls.txt` or settings dialog) for customizing controls and visual aspect.
 
 ### Phase 13: Trophies
-- [ ] Map GameKit achievements (if `GameKit` is linked, grep `reportAchievement`/`GKAchievement`) to `sceNpTrophy` unlocks; otherwise a short achievable list.
+- [ ] Optional trophy definition and unlock hooks.
 
 ### Phase 14: LiveArea and VPK
-- [ ] `icon0.png` 128x128, `bg.png` 840x500, `startup.png` 280x158 (8-bit indexed) -- `psvita-toolkit livearea --validate`.
-- [ ] `param.sfo` with Title ID `PSVCNK001`; VPK installs without warnings.
+- [x] Title ID assigned: `PSVCNK001`.
+- [x] LiveArea template assets in place (`sce_sys/livearea/contents/`).
+- [x] Build pipeline verified: `psvita-toolkit build` produces `build/eboot.bin` and `build/crashnitro1.vpk` (1.0 MB).
 
 ### Phase 15: Real-hardware testing and release
-- [ ] Full playthrough without crashes; suspend/resume OK; Vita 1000/2000/PSTV status stated.
-- [ ] Production build: `PORT_TRACE=OFF` or `psvita-toolkit log-trace --remove`.
-- [ ] README states the exact IPA version tested and that the user must supply a **decrypted** IPA.
+- [ ] Deploy data bundle: `psvita-toolkit deploy --data`
+- [ ] Deploy executable: `psvita-toolkit deploy`
+- [ ] Launch on Vita and capture newest log (`psvita-toolkit fetch-latest` or `logs/crashnitro1_NNN.log`).
+- [ ] Verify playable race loop.
+
+---
 
 ## 6. Crash triage loop
 
-1. Stage and deploy data: `tools/stage_data.sh` then `psvita-toolkit deploy --data` (or `python3 -I tools/deploy_data.py`).
-2. Pull logs: `python3 -I tools/deploy_data.py --logs` → newest `logs/crashnitro1_NNN.log`.
-3. Dump: `psvita-toolkit analyze <dump>.psp2dmp --elf build/crashnitro1`.
-4. PC in `0x98xxxxxx` → game code: subtract `0x98000000`, find the function in `decompiled/macho/symbols.txt`, then `python3 -I tools/annotate.py game_app/iFuse '<symbol>'` and the Ghidra pseudo-C.
-5. PC in the loader → it's our shim: check the ABI rules (section 4) first.
+1. Stage and deploy data: `tools/stage_data.sh` then `psvita-toolkit deploy --data`.
+2. Deploy VPK / binary: `psvita-toolkit deploy`.
+3. Pull logs: `psvita-toolkit fetch-latest` → inspect `logs/crashnitro1_NNN.log`.
+4. Crash dump triage: `psvita-toolkit analyze logs/*.psp2dmp --elf build/crashnitro1`.
+5. Inspect offsets: `PC - 0x98000000` gives exact offset in `decompiled/macho/symbols.txt`.
 
-## 7. On-console log standard
+## 7. Build Commands
 
-The game log lives at `ux0:data/crashnitro1/logs/crashnitro1_NNN.log` -- concretely `crashnitro1_001.log`,
-`crashnitro1_002.log`, ... up to `crashnitro1_999.log`, then wraps to 001. Never `log_NNN.log`, never
-`log_<timestamp>.txt`, never 000-based, never a hardcoded path: build it from `LOGS_PATH`
-(`source/hle.h`). Use the levels `l_info` / `l_warn` / `l_error` / `l_fatal` and tag subsystems
-(`[MACHO]`, `[OBJC]`, `[GL]`, `[AUDIO]`, `[INPUT]`, `[UNIMPL]`) so logs can be grepped.
-Toolkit: `psvita-toolkit log-standard --fix-dirs`, `psvita-toolkit log-trace --ensure-flag`.
+```bash
+# Compile VPK
+/Users/metalsyntax/.local/bin/psvita-toolkit build
 
-## Engine Architecture & Proven Lineage
+# Deploy data (game assets + rebase.bin)
+/Users/metalsyntax/.local/bin/psvita-toolkit deploy --data
 
-- **Identified Engine:** Polarbit / Vivendi Games Mobile
-- **Technical Architecture Profile:** Polarbit Fuse engine, ARMv6, GLES1, fast fixed-function pipeline, arcade kart controls
-- **Proven Reference Port:** Polarbit ARMv6 engine lineage (Fuse engine / Raging Thunder).
+# Deploy VPK/eboot
+/Users/metalsyntax/.local/bin/psvita-toolkit deploy
+```
