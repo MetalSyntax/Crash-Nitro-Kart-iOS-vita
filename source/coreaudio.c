@@ -182,6 +182,189 @@ static int as_GetProperty(uint32_t id, uint32_t *size, void *data) {
     return 0;
 }
 
+
+// ---------------------------------------------------------------- AudioQueue (output)
+// PAudioDeviceWaveOut (Polarbit) crea una cola PCM s16 con 3 buffers; AQBufferCallback mezcla en
+// el buffer y lo vuelve a encolar. Aquí un hilo consume los buffers encolados en orden, los manda a
+// sceAudioOut y, al terminar cada uno, llama al callback del juego (como el hilo de AudioQueue).
+
+typedef struct {
+    uint32_t mAudioDataBytesCapacity;
+    void *mAudioData;
+    uint32_t mAudioDataByteSize;
+    void *mUserData;
+    uint32_t mPacketDescriptionCapacity;
+    void *mPacketDescriptions;
+    uint32_t mPacketDescriptionCount;
+} aq_buffer;
+
+#define AQ_MAX 16
+
+typedef struct {
+    asbd fmt;
+    void *proc, *user;
+    aq_buffer *fifo[AQ_MAX], *all[AQ_MAX];
+    int head, tail, nall;
+    SceUID lock, items, thread;
+    volatile int running, paused;
+} audio_queue;
+
+static int aq_NewOutput(const asbd *fmt, void *proc, void *user, void *runloop, void *mode, uint32_t flags,
+                        audio_queue **out) {
+    if (!fmt || !out)
+        return -50; // kAudio_ParamError
+    if (fmt->mFormatID != FOURCC('l', 'p', 'c', 'm') || (fmt->mBitsPerChannel != 16 && fmt->mBitsPerChannel != 8) ||
+        fmt->mChannelsPerFrame < 1 || fmt->mChannelsPerFrame > 2) {
+        l_error("AudioQueueNewOutput: unsupported format id 0x%08X, %u bits, %u ch", (unsigned)fmt->mFormatID,
+                (unsigned)fmt->mBitsPerChannel, (unsigned)fmt->mChannelsPerFrame);
+        return -66563; // kAudioQueueErr_InvalidParameter
+    }
+    audio_queue *q = calloc(1, sizeof(*q));
+    q->fmt = *fmt;
+    q->proc = proc;
+    q->user = user;
+    q->lock = sceKernelCreateSema("aq_lock", 0, 1, 1, NULL);
+    q->items = sceKernelCreateSema("aq_items", 0, 0, AQ_MAX, NULL);
+    l_info("AudioQueue: %d Hz, %u ch, %u bits", (int)fmt->mSampleRate, (unsigned)fmt->mChannelsPerFrame,
+           (unsigned)fmt->mBitsPerChannel);
+    *out = q;
+    return 0;
+}
+
+static int aq_AllocateBuffer(audio_queue *q, uint32_t size, aq_buffer **out) {
+    if (!q || !out || q->nall >= AQ_MAX)
+        return -50;
+    aq_buffer *b = calloc(1, sizeof(*b));
+    b->mAudioData = calloc(1, size);
+    b->mAudioDataBytesCapacity = size;
+    q->all[q->nall++] = b;
+    *out = b;
+    return 0;
+}
+
+static int aq_EnqueueBuffer(audio_queue *q, aq_buffer *b, uint32_t npackets, const void *descs) {
+    if (!q || !b)
+        return -50;
+    sceKernelWaitSema(q->lock, 1, NULL);
+    int full = ((q->head + 1) % AQ_MAX) == q->tail;
+    if (!full) {
+        q->fifo[q->head] = b;
+        q->head = (q->head + 1) % AQ_MAX;
+    }
+    sceKernelSignalSema(q->lock, 1);
+    if (full)
+        return -66686; // kAudioQueueErr_BufferEnqueuedTwice (cola llena)
+    sceKernelSignalSema(q->items, 1);
+    return 0;
+}
+
+static int aq_thread(SceSize args, void *argp) {
+    audio_queue *q = *(audio_queue **)argp;
+    int rate = (int)q->fmt.mSampleRate, ch = q->fmt.mChannelsPerFrame, bits = q->fmt.mBitsPerChannel;
+    int frame = ch * bits / 8;
+    int port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM, GRAIN, rate, SCE_AUDIO_OUT_MODE_STEREO);
+    if (port < 0) {
+        l_error("AudioQueue: sceAudioOutOpenPort(%d Hz) = 0x%08X", rate, port);
+        return 0;
+    }
+    int16_t out[GRAIN * 2];
+    int fill = 0;
+    while (q->running) {
+        SceUInt timeout = 100000; // 100 ms: revisar running/paused aunque no lleguen buffers
+        if (q->paused || sceKernelWaitSema(q->items, 1, &timeout) < 0) {
+            if (q->paused)
+                sceKernelDelayThread(10000);
+            continue;
+        }
+        sceKernelWaitSema(q->lock, 1, NULL);
+        aq_buffer *b = q->fifo[q->tail];
+        q->tail = (q->tail + 1) % AQ_MAX;
+        sceKernelSignalSema(q->lock, 1);
+
+        uint32_t bytes = b->mAudioDataByteSize < b->mAudioDataBytesCapacity ? b->mAudioDataByteSize
+                                                                             : b->mAudioDataBytesCapacity;
+        const uint8_t *p = b->mAudioData;
+        for (uint32_t i = 0; i + frame <= bytes; i += frame) {
+            int16_t l, r;
+            if (bits == 16) {
+                l = ((const int16_t *)(p + i))[0];
+                r = ch == 2 ? ((const int16_t *)(p + i))[1] : l;
+            } else { // 8 bits sin signo
+                l = (int16_t)((p[i] - 128) << 8);
+                r = ch == 2 ? (int16_t)((p[i + 1] - 128) << 8) : l;
+            }
+            out[fill * 2] = l;
+            out[fill * 2 + 1] = r;
+            if (++fill == GRAIN) {
+                sceAudioOutOutput(port, out);
+                fill = 0;
+            }
+        }
+        if (q->running && q->proc)
+            call_guest(q->proc, (uint32_t)q->user, (uint32_t)q, (uint32_t)b, 0);
+    }
+    sceAudioOutReleasePort(port);
+    return 0;
+}
+
+static int aq_Start(audio_queue *q, const void *start_time) {
+    if (!q)
+        return -50;
+    q->paused = 0;
+    if (q->running)
+        return 0;
+    q->running = 1;
+    q->thread = sceKernelCreateThread("audioqueue", aq_thread, 0x10000100, 256 * 1024, 0, 0, NULL);
+    if (q->thread < 0) {
+        q->running = 0;
+        l_error("AudioQueue: sceKernelCreateThread = 0x%08X", q->thread);
+        return -1;
+    }
+    sceKernelStartThread(q->thread, sizeof(q), &q);
+    return 0;
+}
+
+static int aq_Pause(audio_queue *q) {
+    if (q)
+        q->paused = 1;
+    return 0;
+}
+
+static int aq_Stop(audio_queue *q, int immediate) {
+    if (q && q->running) {
+        q->running = 0;
+        sceKernelWaitThreadEnd(q->thread, NULL, NULL);
+        sceKernelDeleteThread(q->thread);
+        // los buffers pendientes se descartan, como AudioQueueStop
+        sceKernelWaitSema(q->lock, 1, NULL);
+        q->head = q->tail = 0;
+        sceKernelSignalSema(q->lock, 1);
+        while (sceKernelPollSema(q->items, 1) >= 0) {}
+    }
+    return 0;
+}
+
+static int aq_Dispose(audio_queue *q, int immediate) {
+    if (!q)
+        return 0;
+    aq_Stop(q, 1);
+    for (int i = 0; i < q->nall; i++) {
+        free(q->all[i]->mAudioData);
+        free(q->all[i]);
+    }
+    sceKernelDeleteSema(q->lock);
+    sceKernelDeleteSema(q->items);
+    free(q);
+    return 0;
+}
+
+// PVibraControl::VibraSupported consulta kAudioServicesPropertyIsUISound/... : sin vibración.
+static int as_ServicesGetProperty(uint32_t id, uint32_t spec_size, const void *spec, uint32_t *size, void *data) {
+    if (data && size && *size)
+        memset(data, 0, *size);
+    return 0;
+}
+
 #define F(name, fn) {"_" #name, (uintptr_t)(fn)}
 
 const import_entry coreaudio_imports[] = {
@@ -193,5 +376,9 @@ const import_entry coreaudio_imports[] = {
     F(AudioSessionGetProperty, as_GetProperty), F(AudioSessionAddPropertyListener, ok),
     // imported via __nl_symbol_ptr (function pointer): requires code stub, not data
     F(AudioSessionRemovePropertyListenerWithUserData, ok),
+    F(AudioQueueNewOutput, aq_NewOutput), F(AudioQueueAllocateBuffer, aq_AllocateBuffer),
+    F(AudioQueueEnqueueBuffer, aq_EnqueueBuffer), F(AudioQueueStart, aq_Start), F(AudioQueuePause, aq_Pause),
+    F(AudioQueueStop, aq_Stop), F(AudioQueueDispose, aq_Dispose),
+    F(AudioServicesGetProperty, as_ServicesGetProperty), F(AudioServicesPlaySystemSound, ok),
 };
 const int coreaudio_imports_count = sizeof(coreaudio_imports) / sizeof(coreaudio_imports[0]);

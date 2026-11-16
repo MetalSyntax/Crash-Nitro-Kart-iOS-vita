@@ -80,6 +80,7 @@ static const uint8_t *file_data;
 static uint32_t file_slice_offset;
 static uint32_t text_vm, text_size;
 static uint8_t *text_buf;
+static uint32_t img_lo = 0xFFFFFFFF, img_hi = 0;
 static const nlist *symtab;
 static uint32_t nsyms;
 static const char *strtab;
@@ -195,6 +196,40 @@ uintptr_t macho_sym(const char *name) {
     return 0;
 }
 
+// Dirección en la Vita del símbolo symtab[idx]: si está definido en el propio binario (p. ej. weak
+// coalesced, que dyld resuelve contra el ejecutable) su dirección real; si no, el shim nativo o un
+// stub "unimpl".
+static uintptr_t resolve_symbol(uint32_t idx) {
+    const nlist *n = &symtab[idx];
+    const char *name = strtab + n->n_strx;
+    if ((n->n_type & N_TYPE) == N_SECT && n->n_value) {
+        const import_entry *imp = imports_lookup(name); // un shim explícito tiene prioridad
+        if (!imp)
+            return MACHO_SLIDE + n->n_value + ((n->n_desc & N_ARM_THUMB_DEF) ? 1 : 0);
+    }
+    const import_entry *imp = imports_lookup(name);
+    if (imp)
+        return imp->data ? imp->addr : make_thunk(imp->addr, ml_align_call);
+    return is_data_symbol(name) ? make_unimpl_data(name) : make_unimpl_thunk(name);
+}
+
+// Ejecutables con _main sin símbolo: crt1 "start" hace ldr ip,[pc,#k]; add ip,pc,ip; ldr ip,[ip];
+// blx ip, con el puntero a main en un __nl_symbol_ptr local (ya reubicado por rebase.bin).
+uintptr_t macho_main_from_start(void) {
+    if (!macho_entry_addr || (macho_entry_addr & 1))
+        return 0;
+    const uint32_t *p = (const uint32_t *)macho_entry_addr;
+    for (int i = 0; i < 16; i++) {
+        if ((p[i] & 0xFFFFF000) == 0xE59FC000 && p[i + 1] == 0xE08FC00C && p[i + 2] == 0xE59CC000) {
+            uintptr_t lit = (uintptr_t)&p[i] + 8 + (p[i] & 0xFFF);
+            uintptr_t slot = (uintptr_t)&p[i + 1] + 8 + *(const uint32_t *)lit;
+            uintptr_t m = *(const uint32_t *)slot;
+            return is_guest_addr(m) ? m : 0;
+        }
+    }
+    return 0;
+}
+
 uintptr_t macho_entry(void) {
     return macho_entry_addr;
 }
@@ -229,46 +264,51 @@ void macho_hook(const char *name, void *dst) {
 static void apply_rebase(const char *rebase_path) {
     FILE *f = fopen(rebase_path, "rb");
     if (!f) {
-        l_warn("Not found %s: skipping offline rebase", rebase_path);
-        return;
+        // Ejecutable no PIE: sin rebase.bin todos los punteros absolutos quedan en 0x1000.. y crashea.
+        fatal_error("Missing %s (run tools/deploy_data.py)", rebase_path);
     }
     uint32_t magic = 0, count = 0;
     if (fread(&magic, 4, 1, f) != 1 || magic != 0x31534252 /* RBS1 */) {
         fclose(f);
-        l_error("Invalid rebase.bin header format (expected RBS1)");
-        return;
+        fatal_error("Invalid %s header (expected RBS1)", rebase_path);
     }
-    if (fread(&count, 4, 1, f) != 1) {
+    if (fread(&count, 4, 1, f) != 1 || count == 0 || count > 0x100000) {
         fclose(f);
-        return;
+        fatal_error("Invalid %s word count", rebase_path);
     }
 
     uint32_t *entries = malloc(count * sizeof(uint32_t));
-    if (!entries) {
-        fclose(f);
-        return;
-    }
-    fread(entries, sizeof(uint32_t), count, f);
+    if (!entries)
+        fatal_error("Out of memory reading %s", rebase_path);
+    size_t got = fread(entries, sizeof(uint32_t), count, f);
     fclose(f);
+    if (got != count)
+        fatal_error("Truncated %s (%u of %u words): re-upload it", rebase_path, (unsigned)got, (unsigned)count);
 
     l_info("Applying %u rebase words from %s...", (unsigned)count, rebase_path);
     int applied = 0;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t va = entries[i];
-        if (va >= text_vm && va < text_vm + text_size) {
-            // Rebase on text section stubs before copying to RX block
+        if (va >= text_vm && va + 4 <= text_vm + text_size && (va & 3) == 0) {
+            // Rebase on text section stubs/literal pools before copying to RX block
             uint32_t *ptr = (uint32_t *)(text_buf + (va - text_vm));
-            *ptr += MACHO_SLIDE;
-            applied++;
-        } else {
+            if (*ptr < MACHO_SLIDE) {
+                *ptr += MACHO_SLIDE;
+                applied++;
+            }
+        } else if (va >= img_lo && va + 4 <= img_hi && (va & 3) == 0) {
             // Rebase in data segments (already mapped at MACHO_SLIDE + va)
             uint32_t *ptr = (uint32_t *)(MACHO_SLIDE + va);
-            *ptr += MACHO_SLIDE;
-            applied++;
+            if (*ptr < MACHO_SLIDE) {
+                *ptr += MACHO_SLIDE;
+                applied++;
+            }
         }
     }
     free(entries);
-    l_info("Rebase complete: %d words relocated.", applied);
+    l_info("Rebase complete: %d of %u words relocated.", applied, (unsigned)count);
+    if ((uint32_t)applied != count)
+        l_warn("Rebase: %u words skipped (out of image or already relocated)", (unsigned)(count - applied));
 }
 
 int macho_load(const char *bin_path, const char *rebase_path) {
@@ -332,9 +372,10 @@ int macho_load(const char *bin_path, const char *rebase_path) {
 
     segment_command *segs[MAX_SEGS];
     int nseg = 0;
-    uint32_t img_lo = 0xFFFFFFFF;
-    uint32_t img_hi = 0;
+    img_lo = 0xFFFFFFFF;
+    img_hi = 0;
     segment_command *seg_text = NULL;
+    int entry_is_offset = 0;
 
     section *sects[MAX_SECTS];
     int nsects_total = 0;
@@ -372,6 +413,7 @@ int macho_load(const char *bin_path, const char *rebase_path) {
         } else if (cmd == LC_MAIN) {
             uint64_t entryoff = *(uint64_t *)(d + off + 8);
             macho_entry_addr = (uintptr_t)entryoff;
+            entry_is_offset = 1;
             l_info("LC_MAIN detected: entryoff = 0x%08X", (unsigned)entryoff);
         } else if (cmd == LC_UNIXTHREAD) {
             uint32_t *regs = (uint32_t *)(d + off + 16);
@@ -393,11 +435,10 @@ int macho_load(const char *bin_path, const char *rebase_path) {
         fatal_error("Mach-O does not contain __TEXT segment");
 
     if (macho_entry_addr) {
-        if (macho_entry_addr < 0x1000000) {
-            macho_entry_addr = MACHO_SLIDE + text_vm + macho_entry_addr;
-        } else {
-            macho_entry_addr = MACHO_SLIDE + macho_entry_addr;
-        }
+        if (entry_is_offset && seg_text)
+            macho_entry_addr += seg_text->vmaddr;
+        // LC_UNIXTHREAD da el pc como dirección VM absoluta (como LC_MAIN tras sumarle __TEXT)
+        macho_entry_addr = MACHO_SLIDE + macho_entry_addr;
         l_info("Primary Mach-O entry point resolved at 0x%08X", (unsigned)macho_entry_addr);
     }
 
@@ -453,6 +494,30 @@ int macho_load(const char *bin_path, const char *rebase_path) {
 
     // 4. Resolve dynamic symbol imports (indirect symbols and pointer stubs)
     if (dysym) {
+        // 4a. Relocaciones externas (punteros en datos a símbolos de otras librerías o a símbolos
+        //     weak del propio binario: vtables, typeinfo, &free...). r_address es VM absoluta
+        //     (el primer segmento es __PAGEZERO en 0); el valor previo de la palabra es el addend.
+        const uint32_t *rel = (const uint32_t *)(d + dysym->extreloff);
+        int nbound = 0;
+        for (uint32_t i = 0; i < dysym->nextrel; i++) {
+            uint32_t addr = rel[i * 2], info = rel[i * 2 + 1];
+            if (addr & 0x80000000u) // scattered: no aparece en ejecutables enlazados
+                continue;
+            uint32_t symnum = info & 0xFFFFFF, len = (info >> 25) & 3, ext = (info >> 27) & 1;
+            if (!ext || len != 2 || symnum >= nsyms)
+                continue;
+            uint32_t *ptr;
+            if (addr >= text_vm && addr + 4 <= text_vm + text_size)
+                ptr = (uint32_t *)(text_buf + (addr - text_vm));
+            else if (addr >= img_lo && addr + 4 <= img_hi)
+                ptr = (uint32_t *)(MACHO_SLIDE + addr);
+            else
+                continue;
+            *ptr += resolve_symbol(symnum);
+            nbound++;
+        }
+        l_info("External relocations: %d of %u bound.", nbound, (unsigned)dysym->nextrel);
+
         uint32_t *indirect = (uint32_t *)(d + dysym->indirectsymoff);
         for (int s_idx = 0; s_idx < nsects_total; s_idx++) {
             section *s = sects[s_idx];
@@ -465,21 +530,7 @@ int macho_load(const char *bin_path, const char *rebase_path) {
                     if (sym_idx & INDIRECT_SYMBOL_LOCAL) {
                         slots[i] += MACHO_SLIDE;
                     } else if (!(sym_idx & INDIRECT_SYMBOL_ABS)) {
-                        const char *name = strtab + symtab[sym_idx].n_strx;
-                        const import_entry *imp = imports_lookup(name);
-                        if (imp) {
-                            if (imp->data) {
-                                slots[i] = imp->addr;
-                            } else {
-                                slots[i] = make_thunk(imp->addr, ml_align_call);
-                            }
-                        } else {
-                            if (is_data_symbol(name)) {
-                                slots[i] = make_unimpl_data(name);
-                            } else {
-                                slots[i] = make_unimpl_thunk(name);
-                            }
-                        }
+                        slots[i] = resolve_symbol(sym_idx);
                     }
                 }
             }

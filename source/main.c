@@ -111,6 +111,8 @@ int main(int argc, char *argv[]) {
     if (!entry)
         entry = macho_sym("_startClet");
     if (!entry)
+        entry = macho_main_from_start();
+    if (!entry)
         entry = macho_entry();
 
     if (entry) {
@@ -126,8 +128,7 @@ int main(int argc, char *argv[]) {
         input_poll();
         ime_poll();
         patch_frame();
-        gles_present();
-        sceKernelDelayThread(16000); // ~60 fps
+        gles_present(); // vglSwapBuffers espera vblank: 60 fps máx.
     }
 
     return 0;

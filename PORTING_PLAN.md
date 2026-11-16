@@ -22,7 +22,7 @@
 
 - **Executable:** `iFuse` (789 KB), architectures **armv6 / arm**.
 - **FairPlay:** cryptid 0 -- decrypted, ready to load.
-- **Rebase words (`rebase.bin`):** 1562 relocations processed.
+- **Rebase words (`rebase.bin`):** 2914 relocations (incl. `__text` literal pools per Thumb/ARM function; numeric tables excluded).
 - **Unique imports (macho_prep):** 134.
 - **ObjC:** 3 classes (`iFuseAppDelegate`, `EAGLView`, etc.) / 33 methods in symbol table.
 - **Base load address:** `MACHO_SLIDE = 0x98000000`.
@@ -106,7 +106,7 @@ ux0:data/crashnitro1/
 ### Phase 1: Repo and tools
 - [x] IPA extracted, `game_app` symlink verified, `ios-loader-boilerplate` adapted to `crashnitro1`.
 - [x] Executable decrypted (cryptid 0).
-- [x] `rebase.bin` + `docs/macho_report.txt` generated (1562 relocations).
+- [x] `rebase.bin` + `docs/macho_report.txt` generated (2849 relocations).
 - [x] Tooling (`tools/annotate.py`, `tools/macho_prep.py`) fixed for 7-tuple unpack.
 
 ### Phase 2: Decompilation and inventory

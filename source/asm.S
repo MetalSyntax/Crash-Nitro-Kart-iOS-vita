@@ -78,3 +78,25 @@ ml_align_call:
     blx     ip
     mov     sp, r4
     pop     {r4-r8, r10, r11, pc}
+
+@ setjmp/longjmp con el jmp_buf del juego (iOS: 27 palabras; aquí se usan 26: r4-r11, sp, lr,
+@ d8-d15). Se enlazan directos (sin ml_align_call) para guardar el sp/lr reales del juego: el motor
+@ Polarbit (PTask) los usa como corrutinas con pilas propias.
+    .global d_setjmp
+    .type d_setjmp, %function
+d_setjmp:
+    mov     ip, sp
+    stmia   r0!, {r4-r11, ip, lr}
+    vstmia  r0, {d8-d15}
+    mov     r0, #0
+    bx      lr
+
+    .global d_longjmp
+    .type d_longjmp, %function
+d_longjmp:
+    ldmia   r0!, {r4-r11, ip, lr}
+    vldmia  r0, {d8-d15}
+    mov     sp, ip
+    movs    r0, r1
+    moveq   r0, #1
+    bx      lr

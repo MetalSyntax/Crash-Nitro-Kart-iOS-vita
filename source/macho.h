@@ -38,6 +38,8 @@ uintptr_t macho_sym(const char *name);
  * @brief Returns the primary entry point parsed from LC_MAIN or LC_UNIXTHREAD.
  */
 uintptr_t macho_entry(void);
+/** _main deducido de crt1 "start" cuando el símbolo está stripeado (0 si no se reconoce). */
+uintptr_t macho_main_from_start(void);
 
 /**
  * @brief Overwrites a guest function entry point with an unconditional trampoline hook.

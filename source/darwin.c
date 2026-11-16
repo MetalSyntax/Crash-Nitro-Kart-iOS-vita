@@ -15,6 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -371,6 +374,111 @@ SOFTFP static double m_ldexp(double x, int e) { return ldexp(x, e); }
 // ---------------------------------------------------------------- import table
 
 // name without Mach-O prepended "_": F(__divsi3, ...) registers "___divsi3".
+// ---------------------------------------------------------------- más libc con ABI de Darwin
+
+// time_t de iOS 32 bits es de 4 bytes; el de newlib, de 8.
+static int32_t d_time(int32_t *t) {
+    int32_t now = (int32_t)time(NULL);
+    if (t)
+        *t = now;
+    return now;
+}
+static struct tm *d_localtime(const int32_t *t) {
+    time_t tt = t ? (time_t)*t : time(NULL);
+    return localtime(&tt); // struct tm: los 9 int iniciales coinciden con Darwin
+}
+
+// dirent de iOS (ino de 64 bits): {u64 ino; u64 seekoff; u16 reclen; u16 namlen; u8 type; name[1024]}
+typedef struct { uint64_t d_ino, d_seekoff; uint16_t d_reclen, d_namlen; uint8_t d_type; char d_name[1024]; } __attribute__((packed)) darwin_dirent;
+typedef struct { DIR *dir; char path[512]; darwin_dirent ent; } d_DIR;
+static d_DIR *d_opendir(const char *path) {
+    char p[512];
+    DIR *dir = opendir(darwin_path(path, p, sizeof(p)));
+    if (!dir)
+        return NULL;
+    d_DIR *d = calloc(1, sizeof(*d));
+    d->dir = dir;
+    snprintf(d->path, sizeof(d->path), "%s", p);
+    return d;
+}
+static darwin_dirent *d_readdir(d_DIR *d) {
+    struct dirent *e = d ? readdir(d->dir) : NULL;
+    if (!e)
+        return NULL;
+    memset(&d->ent, 0, sizeof(d->ent));
+    snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", e->d_name);
+    d->ent.d_namlen = strlen(d->ent.d_name);
+    d->ent.d_reclen = sizeof(d->ent);
+    d->ent.d_ino = 1;
+    char full[1024];
+    struct stat st;
+    snprintf(full, sizeof(full), "%s/%s", d->path, e->d_name);
+    d->ent.d_type = !stat(full, &st) && S_ISDIR(st.st_mode) ? 4 : 8; // DT_DIR / DT_REG de Darwin
+    return &d->ent;
+}
+static int d_closedir(d_DIR *d) {
+    if (!d)
+        return -1;
+    int r = closedir(d->dir);
+    free(d);
+    return r;
+}
+
+static int d_vfprintf(FILE *f, const char *fmt, va_list ap) {
+    char out[2048];
+    va_list cp;
+    va_copy(cp, ap);
+    words w = {&cp, NULL};
+    int r = darwin_vformat(out, sizeof(out), fmt, &w);
+    va_end(cp);
+    if (f == stderr || f == stdout)
+        l_info("[GUEST] %s", out);
+    else
+        fputs(out, f);
+    return r;
+}
+
+SOFTFP static double d_strtod(const char *s, char **end) { return strtod(s, end); }
+static int d_toupper(int c) { return toupper(c); }
+SOFTFP static unsigned f_tou(float f) { return f <= 0 ? 0 : (unsigned)f; }
+SOFTFP static float ull_tof(unsigned long long v) { return (float)v; }
+SOFTFP static int f_unord(float a, float b) { return a != a || b != b; }
+
+// CFRunLoop: PAudioDeviceWaveOut::Start programa un timer de reinicio de audio (AudioRestart); el
+// AudioQueue de coreaudio.c no lo necesita, así que el timer se crea pero no se dispara.
+SOFTFP static double d_CFAbsoluteTimeGetCurrent(void) {
+    struct timeval t;
+    gettimeofday(&t, NULL);
+    return (double)t.tv_sec - 978307200.0 + t.tv_usec / 1e6; // segundos desde 2001-01-01
+}
+static uint32_t cf_dummy[8];
+static void *d_CFRunLoopGetCurrent(void) { return cf_dummy; }
+static void *d_CFRunLoopTimerCreate(void) { return calloc(1, 64); }
+static void d_cf_noop(void) {}
+
+// Fast enumeration de NSSet/NSArray (touches): sin runtime real nunca hay mutación.
+static void d_objc_enumerationMutation(void *o) {}
+
+static void d_syslog(int pri, const char *fmt, ...) {}
+static int d_pthread_cancel(void *t) { return 0; }
+
+static const char *d_inet_ntoa(uint32_t a) { return "0.0.0.0"; }
+extern void d_setjmp(void), d_longjmp(void);
+
+// iOS 32 bits: struct timeval = {int32 tv_sec; int32 tv_usec} (8 bytes). En newlib time_t es de
+// 64 bits (16 bytes): llamarla directo pisa 8 bytes de la pila del juego (PTickCount).
+static int d_gettimeofday(int32_t *tv, void *tz) {
+    struct timeval t;
+    int r = gettimeofday(&t, NULL);
+    if (tv) {
+        tv[0] = (int32_t)t.tv_sec;
+        tv[1] = (int32_t)t.tv_usec;
+    }
+    if (tz)
+        memset(tz, 0, 8);
+    return r;
+}
+
 #define F(name, fn) {"_" #name, (uintptr_t)(fn)}
 #define D(name) {"_" #name, (uintptr_t)(name)} // identical signature in newlib
 #define V(name, ptr) {"_" #name, (uintptr_t)(ptr), 1} // data symbol, not function
@@ -390,12 +498,24 @@ const import_entry darwin_imports[] = {
     D(fflush), D(fputs), F(mkdir, d_mkdir), D(close), V(__stderrp, &d_stderrp),
     V(__stdinp, &d_stdinp),
     // time / system
-    D(gettimeofday), F(usleep, d_usleep), F(mach_absolute_time, d_mach_absolute_time),
+    F(gettimeofday, d_gettimeofday), F(time, d_time), F(localtime, d_localtime), F(opendir, d_opendir), F(readdir, d_readdir),
+    F(closedir, d_closedir), F(vfprintf, d_vfprintf), F(strtod, d_strtod), F(__toupper, d_toupper),
+    F(__fixunssfsivfp, f_tou), F(__floatundisf, ull_tof), F(__unordsf2vfp, f_unord),
+    F(CFAbsoluteTimeGetCurrent, d_CFAbsoluteTimeGetCurrent), F(CFRunLoopGetCurrent, d_CFRunLoopGetCurrent),
+    F(CFRunLoopTimerCreate, d_CFRunLoopTimerCreate), F(CFRunLoopAddTimer, d_cf_noop),
+    F(CFRunLoopTimerInvalidate, d_cf_noop), F(objc_enumerationMutation, d_objc_enumerationMutation),
+    F(openlog, d_cf_noop), F(closelog, d_cf_noop), F(syslog, d_syslog), F(pthread_cancel, d_pthread_cancel),
+    D(strchr), D(strrchr), D(strcspn), D(strspn), D(strtoul), D(strcasecmp),
+    {"_setjmp", (uintptr_t)d_setjmp, 1}, {"_longjmp", (uintptr_t)d_longjmp, 1}, // directos: ver asm.S
+    F(usleep, d_usleep), F(mach_absolute_time, d_mach_absolute_time),
     F(mach_timebase_info, d_mach_timebase_info), F(sysctlbyname, d_sysctlbyname), F(exit, d_exit),
     // network: offline stubs
     F(socket, d_net_fail), F(connect, d_net_fail), F(bind, d_net_fail), F(listen, d_net_fail),
     F(accept, d_net_fail), F(send, d_net_fail), F(recv, d_net_fail), F(setsockopt, d_net_fail),
     F(fcntl, d_net_fail), F(inet_addr, d_net_fail), F(gethostbyname, d_gethostbyname),
+    F(getaddrinfo, d_net_fail), F(freeaddrinfo, d_cf_noop), F(getpeername, d_net_fail), F(getsockname, d_net_fail),
+    F(getsockopt, d_net_fail), F(recvfrom, d_net_fail), F(sendto, d_net_fail), F(shutdown, d_net_fail),
+    F(ioctl, d_net_fail), F(inet_ntoa, d_inet_ntoa),
     F(select, d_select),
     // pthreads / semaphores
     F(pthread_create, d_pthread_create), F(pthread_detach, d_pthread_detach), F(pthread_self, d_pthread_self),

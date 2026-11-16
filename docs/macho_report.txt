@@ -1,10 +1,10 @@
-Binario: ux0_data/crashnitro1/iFuse.app/iFuse (armv6)
+Binario: game_app/iFuse (armv6)
 FairPlay cryptid: 0 (descifrado)
 Rango imagen: 0x1000-0x6c000
-Rebase: 1562 palabras -> ux0_data/crashnitro1/rebase.bin
+Rebase: 2907 palabras -> ux0_data/crashnitro1/rebase.bin
   __cfstring           cstr           2
   __const              cstr           237
-  __const              func           659
+  __const              func           644
   __const              interior       3
   __const              sym            138
   __const_coal         func           6
@@ -21,6 +21,21 @@ Rebase: 1562 palabras -> ux0_data/crashnitro1/rebase.bin
   __objc_selrefs       cstr           66
   __objc_superrefs     sym            2
   __symbol_stub4       la_ptr         105
+  __text_pool          __bss          9
+  __text_pool          __cfstring     2
+  __text_pool          __common       13
+  __text_pool          __const        482
+  __text_pool          __cstring      126
+  __text_pool          __data         48
+  __text_pool          __gcc_except_tab 157
+  __text_pool          __nl_symbol_ptr 398
+  __text_pool          __objc_classrefs 17
+  __text_pool          __objc_selrefs 83
+  __text_pool          __objc_superrefs 3
+  __text_pool          field_offset   2
+  __text_pool          func           23
+  __text_switch        code           0
+  zlib_tables          skipped        1
 Rechazadas (en rango, sin símbolo válido): {'__const': 2746, '__data': 1, '__dyld': 1, '__gcc_except_tab': 28}
 Objetos descartados (tablas mixtas): 13
   __ZN18PMusicModulePlayer15xm_linear_tableE ok=129 malas=427

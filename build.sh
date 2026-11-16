@@ -21,7 +21,7 @@ export PATH="$VITASDK/bin:$PATH"
 if [ ! -f "$PROJECT_DIR/vendor/vitaGL/libvitaGL.a" ]; then
     echo "[*] Compiling vendored vitaGL..."
     cd "$PROJECT_DIR/vendor/vitaGL"
-    make SOFTFP_ABI=1 NO_DEBUG=1 HAVE_SHADER_CACHE=1 NO_SPLASHSCREEN=1 HAVE_GLSL_UBOS=1 SAMPLERS_SPEEDHACK=1 DRAW_SPEEDHACK=2 -j$(sysctl -n hw.ncpu)
+    make SOFTFP_ABI=1 NO_DEBUG=1 HAVE_SHADER_CACHE=1 NO_SPLASHSCREEN=1 HAVE_GLSL_UBOS=1 SAMPLERS_SPEEDHACK=1 -j$(sysctl -n hw.ncpu)
     cd "$PROJECT_DIR"
 fi
 

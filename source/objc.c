@@ -319,7 +319,54 @@ static uint32_t objc_msgSend(void *self, const char *sel, ...) {
     uint32_t r = 0;
     const struct tm *now;
     time_t t;
-    if (sel_is(sel, "stringWithUTF8String:") || sel_is(sel, "stringWithCString:encoding:")) {
+    if (sel_is(sel, "alloc") || sel_is(sel, "allocWithZone:") || sel_is(sel, "new")) {
+        // Instancia propia (isa = clase): devolver la clase hacía que el juego escribiera sus
+        // ivars encima de los datos de la clase.
+        uint32_t *o = calloc(1, 512);
+        o[0] = (uint32_t)self;
+        r = (uint32_t)o;
+    } else if (sel_is(sel, "init") || sel_is(sel, "retain") ||
+        sel_is(sel, "self") || sel_is(sel, "class") || sel_is(sel, "initWithCoder:") ||
+        sel_is(sel, "initWithAPI:") || sel_is(sel, "anyObject") || sel_is(sel, "initWithFrame:")) {
+        r = self ? (uint32_t)self : ret_obj();
+    } else if (sel_is(sel, "release") || sel_is(sel, "autorelease") || sel_is(sel, "drain") ||
+               sel_is(sel, "dealloc") || sel_is(sel, "invalidate")) {
+        r = 0;
+    } else if (sel_is(sel, "sharedAccelerometer") || sel_is(sel, "defaultCenter") || sel_is(sel, "mainScreen") ||
+               sel_is(sel, "sharedApplication") || sel_is(sel, "keyWindow") ||
+               sel_is(sel, "currentContext") || sel_is(sel, "layer") ||
+               sel_is(sel, "drawableProperties") || sel_is(sel, "dictionaryWithObjectsAndKeys:") ||
+               sel_is(sel, "numberWithBool:") ||
+               sel_is(sel, "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:")) {
+        r = ret_obj();
+    } else if (sel_is(sel, "setCurrentContext:") || sel_is(sel, "setDelegate:") || sel_is(sel, "addSubview:") ||
+               sel_is(sel, "makeKeyAndVisible") || sel_is(sel, "setMultipleTouchEnabled:") ||
+               sel_is(sel, "setUpdateInterval:") || sel_is(sel, "setStatusBarHidden:") ||
+               sel_is(sel, "setIdleTimerDisabled:") || sel_is(sel, "setOpaque:") ||
+               sel_is(sel, "setDrawableProperties:") || sel_is(sel, "setScalingMode:") ||
+               sel_is(sel, "addObserver:selector:name:object:") ||
+               sel_is(sel, "removeObserver:name:object:") ||
+               sel_is(sel, "drawView")) { // _UpdateScreen -> [glView drawView]: presenta gles_present
+        r = 0;
+    } else if (sel_is(sel, "renderbufferStorage:fromDrawable:") || sel_is(sel, "presentRenderbuffer:") ||
+               sel_is(sel, "isOpaque")) {
+        r = 1;
+    } else if (sel_is(sel, "stringByAppendingString:")) {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "%s%s", ns_cstr(self), ns_cstr((void *)a));
+        r = (uint32_t)ns_new(buf);
+    } else if (sel_is(sel, "stringByDeletingLastPathComponent")) {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "%s", ns_cstr(self));
+        char *slash = strrchr(buf, '/');
+        if (slash) *slash = 0;
+        r = (uint32_t)ns_new(buf);
+    } else if (sel_is(sel, "initWithCString:")) {
+        r = (uint32_t)ns_new((const char *)a);
+    } else if (sel_is(sel, "getCString:")) {
+        strcpy((char *)a, ns_cstr(self));
+        r = 1;
+    } else if (sel_is(sel, "stringWithUTF8String:") || sel_is(sel, "stringWithCString:encoding:")) {
         r = (uint32_t)ns_new((const char *)a);
     } else if (sel_is(sel, "stringWithFormat:")) {
         r = (uint32_t)ns_format(ns_cstr((void *)a), ap);
@@ -366,7 +413,11 @@ static uint32_t objc_msgSend(void *self, const char *sel, ...) {
 static void objc_msgSend_stret(float *ret, void *self, const char *sel, ...) {
     va_list ap;
     va_start(ap, sel);
-    if (sel_is(sel, "sizeWithFont:")) {
+    if (sel_is(sel, "bounds") || sel_is(sel, "applicationFrame") || sel_is(sel, "frame")) {
+        ret[0] = ret[1] = 0; // CGRect de la pantalla del iPhone (puntos, vertical)
+        ret[2] = 320;
+        ret[3] = 480;
+    } else if (sel_is(sel, "sizeWithFont:")) {
         ui_font *f = va_arg(ap, ui_font *);
         int size = f ? f->size : 14;
         ret[0] = text_width(size, ns_cstr(self));
@@ -387,8 +438,6 @@ static void objc_msgSend_stret(float *ret, void *self, const char *sel, ...) {
 }
 
 // ---------------------------------------------------------------- table
-
-#define F(name, fn) {"_" #name, (uintptr_t)(fn)}
 
 const import_entry objc_imports[] = {
     F(objc_msgSend, objc_msgSend), F(objc_msgSend_stret, objc_msgSend_stret),
