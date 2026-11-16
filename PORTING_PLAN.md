@@ -201,3 +201,9 @@ The game log lives at `ux0:data/crashnitro1/logs/crashnitro1_NNN.log` -- concret
 (`source/hle.h`). Use the levels `l_info` / `l_warn` / `l_error` / `l_fatal` and tag subsystems
 (`[MACHO]`, `[OBJC]`, `[GL]`, `[AUDIO]`, `[INPUT]`, `[UNIMPL]`) so logs can be grepped.
 Toolkit: `psvita-toolkit log-standard --fix-dirs`, `psvita-toolkit log-trace --ensure-flag`.
+
+## Engine Architecture & Proven Lineage
+
+- **Identified Engine:** Polarbit / Vivendi Games Mobile
+- **Technical Architecture Profile:** Polarbit Fuse engine, ARMv6, GLES1, fast fixed-function pipeline, arcade kart controls
+- **Proven Reference Port:** Polarbit ARMv6 engine lineage (Fuse engine / Raging Thunder).
